@@ -1,0 +1,22 @@
+# Runtime data — never commit
+data/
+logs/
+*.db
+*.jsonl
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Environment — contains secrets
+.env
+
+# SSH host key generated at runtime
+data/ssh_host_key
+data/ssh_host_key.pub
+
+# macOS
+.DS_Store

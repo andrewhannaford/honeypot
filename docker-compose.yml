@@ -1,0 +1,27 @@
+services:
+  honeypot:
+    build: .
+    container_name: honeypot
+    restart: unless-stopped
+    environment:
+      - DISCORD_WEBHOOK_URL=${DISCORD_WEBHOOK_URL:-}
+      - DASHBOARD_TOKEN=${DASHBOARD_TOKEN:-}
+    ports:
+      - "22:22"      # SSH
+      - "21:21"      # FTP
+      - "23:23"      # Telnet
+      - "80:80"      # HTTP
+      - "8080:8080"             # Dashboard — accessible on local network
+    volumes:
+      - honeypot-data:/app/data    # holds honeypot.db and ssh_host_key
+      - honeypot-logs:/app/logs
+    networks:
+      - honeypot-net
+
+networks:
+  honeypot-net:
+    driver: bridge
+
+volumes:
+  honeypot-data:
+  honeypot-logs:

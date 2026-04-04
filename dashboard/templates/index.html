@@ -1,0 +1,308 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Honeypot Dashboard</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: 'Segoe UI', system-ui, sans-serif;
+      background: #0d1117;
+      color: #c9d1d9;
+      min-height: 100vh;
+    }
+
+    header {
+      background: #161b22;
+      border-bottom: 1px solid #30363d;
+      padding: 1rem 2rem;
+      display: flex;
+      align-items: center;
+      gap: 1rem;
+    }
+    header h1 { font-size: 1.25rem; color: #f0f6fc; }
+    .badge {
+      background: #21262d;
+      border: 1px solid #30363d;
+      border-radius: 999px;
+      padding: 0.2rem 0.7rem;
+      font-size: 0.75rem;
+      color: #8b949e;
+    }
+    .live-dot {
+      width: 8px; height: 8px;
+      background: #3fb950;
+      border-radius: 50%;
+      animation: pulse 1.5s infinite;
+    }
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.3; }
+    }
+
+    main { padding: 2rem; max-width: 1400px; margin: 0 auto; }
+
+    /* Stat cards */
+    .stat-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+      gap: 1rem;
+      margin-bottom: 2rem;
+    }
+    .stat-card {
+      background: #161b22;
+      border: 1px solid #30363d;
+      border-radius: 8px;
+      padding: 1.2rem;
+    }
+    .stat-card .label { font-size: 0.75rem; color: #8b949e; margin-bottom: 0.4rem; text-transform: uppercase; letter-spacing: 0.05em; }
+    .stat-card .value { font-size: 2rem; font-weight: 700; color: #f0f6fc; }
+    .stat-card.highlight { border-color: #f85149; }
+    .stat-card.highlight .value { color: #f85149; }
+
+    /* Two-column layout */
+    .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-bottom: 2rem; }
+    @media (max-width: 800px) { .two-col { grid-template-columns: 1fr; } }
+
+    .panel {
+      background: #161b22;
+      border: 1px solid #30363d;
+      border-radius: 8px;
+      overflow: hidden;
+    }
+    .panel-header {
+      padding: 0.75rem 1rem;
+      border-bottom: 1px solid #30363d;
+      font-size: 0.85rem;
+      font-weight: 600;
+      color: #f0f6fc;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .panel-body { padding: 1rem; }
+
+    /* Bar chart */
+    .bar-row { display: flex; align-items: center; gap: 0.75rem; margin-bottom: 0.5rem; font-size: 0.8rem; }
+    .bar-label { width: 80px; text-align: right; color: #8b949e; flex-shrink: 0; }
+    .bar-track { flex: 1; background: #21262d; border-radius: 4px; height: 16px; overflow: hidden; }
+    .bar-fill { height: 100%; border-radius: 4px; background: #1f6feb; transition: width 0.4s; }
+    .bar-fill.ssh { background: #388bfd; }
+    .bar-fill.http { background: #3fb950; }
+    .bar-fill.ftp { background: #d29922; }
+    .bar-fill.telnet { background: #bc8cff; }
+    .bar-count { width: 40px; color: #8b949e; font-size: 0.75rem; }
+
+    /* Top IPs table */
+    table { width: 100%; border-collapse: collapse; font-size: 0.82rem; }
+    th { text-align: left; padding: 0.4rem 0.6rem; color: #8b949e; font-weight: 600; border-bottom: 1px solid #21262d; }
+    td { padding: 0.5rem 0.6rem; border-bottom: 1px solid #21262d; }
+    tr:last-child td { border-bottom: none; }
+    tr:hover td { background: #1c2128; }
+    .ip { font-family: monospace; color: #79c0ff; }
+    .service-badge {
+      display: inline-block;
+      padding: 0.1rem 0.5rem;
+      border-radius: 4px;
+      font-size: 0.7rem;
+      font-weight: 600;
+    }
+    .service-badge.SSH    { background: #1f3a5f; color: #79c0ff; }
+    .service-badge.HTTP   { background: #1a3726; color: #3fb950; }
+    .service-badge.FTP    { background: #3d2e00; color: #d29922; }
+    .service-badge.TELNET { background: #2d1f5e; color: #bc8cff; }
+
+    .event-type { color: #8b949e; font-size: 0.75rem; }
+    .event-type.credential { color: #f85149; font-weight: 600; }
+
+    /* Events feed */
+    #events-feed { font-size: 0.78rem; max-height: 420px; overflow-y: auto; }
+    .event-row {
+      display: flex;
+      gap: 0.5rem;
+      padding: 0.45rem 0;
+      border-bottom: 1px solid #21262d;
+      align-items: flex-start;
+    }
+    .event-row:last-child { border-bottom: none; }
+    .event-row .ts { color: #484f58; flex-shrink: 0; font-family: monospace; }
+    .event-row .svc { flex-shrink: 0; }
+    .event-row .msg { color: #c9d1d9; word-break: break-all; }
+    .event-row.credential-event { background: #1c1010; }
+
+    .refresh-info { font-size: 0.7rem; color: #484f58; }
+  </style>
+</head>
+<body>
+
+<header>
+  <div class="live-dot"></div>
+  <h1>Honeypot Dashboard</h1>
+  <span class="badge" id="last-updated">Loading...</span>
+</header>
+
+<main>
+
+  <!-- Stat cards -->
+  <div class="stat-grid" id="stat-cards">
+    <div class="stat-card"><div class="label">Total Events</div><div class="value" id="stat-total">—</div></div>
+    <div class="stat-card"><div class="label">SSH Events</div><div class="value" id="stat-ssh">—</div></div>
+    <div class="stat-card"><div class="label">HTTP Events</div><div class="value" id="stat-http">—</div></div>
+    <div class="stat-card"><div class="label">FTP Events</div><div class="value" id="stat-ftp">—</div></div>
+    <div class="stat-card"><div class="label">Telnet Events</div><div class="value" id="stat-telnet">—</div></div>
+    <div class="stat-card highlight"><div class="label">Credential Attempts</div><div class="value" id="stat-creds">—</div></div>
+  </div>
+
+  <div class="two-col">
+
+    <!-- Activity by service -->
+    <div class="panel">
+      <div class="panel-header">Activity by Service</div>
+      <div class="panel-body" id="service-bars"></div>
+    </div>
+
+    <!-- Top attacker IPs -->
+    <div class="panel">
+      <div class="panel-header">Top Attacker IPs</div>
+      <div class="panel-body" style="padding:0">
+        <table>
+          <thead><tr><th>#</th><th>IP Address</th><th>Events</th></tr></thead>
+          <tbody id="top-ips"></tbody>
+        </table>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- Credential dump -->
+  <div class="panel" style="margin-bottom:2rem">
+    <div class="panel-header">
+      Captured Credentials
+      <span class="refresh-info">auto-refreshes every 15s</span>
+    </div>
+    <div style="overflow-x:auto">
+      <table>
+        <thead><tr><th>Time (UTC)</th><th>IP</th><th>Service</th><th>Username</th><th>Password</th></tr></thead>
+        <tbody id="creds-table"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- Live event feed -->
+  <div class="panel">
+    <div class="panel-header">
+      Live Event Feed
+      <span class="refresh-info">auto-refreshes every 15s</span>
+    </div>
+    <div class="panel-body">
+      <div id="events-feed"></div>
+    </div>
+  </div>
+
+</main>
+
+<script>
+  const SERVICE_COLORS = { SSH: 'ssh', HTTP: 'http', FTP: 'ftp', TELNET: 'telnet' };
+
+  function esc(str) {
+    if (str == null) return '—';
+    return String(str)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+  }
+
+  function fmt(ts) {
+    return ts ? ts.replace('T', ' ').substring(0, 19) : '';
+  }
+
+  function svcBadge(svc) {
+    return `<span class="service-badge ${esc(svc)}">${esc(svc)}</span>`;
+  }
+
+  async function loadStats() {
+    const res = await fetch('/api/stats');
+    if (!res.ok) return;
+    const data = await res.json();
+
+    document.getElementById('stat-total').textContent = data.total;
+
+    const svcMap = {};
+    data.by_service.forEach(r => svcMap[r.service] = r.count);
+    document.getElementById('stat-ssh').textContent    = svcMap['SSH']    || 0;
+    document.getElementById('stat-http').textContent   = svcMap['HTTP']   || 0;
+    document.getElementById('stat-ftp').textContent    = svcMap['FTP']    || 0;
+    document.getElementById('stat-telnet').textContent = svcMap['TELNET'] || 0;
+
+    document.getElementById('stat-creds').textContent = data.credential_count;
+
+    // Service bars
+    const maxCount = Math.max(...data.by_service.map(r => r.count), 1);
+    document.getElementById('service-bars').innerHTML = data.by_service.map(r => {
+      const pct = Math.round((r.count / maxCount) * 100);
+      const cls = SERVICE_COLORS[r.service] || '';
+      return `<div class="bar-row">
+        <div class="bar-label">${r.service}</div>
+        <div class="bar-track"><div class="bar-fill ${cls}" style="width:${pct}%"></div></div>
+        <div class="bar-count">${r.count}</div>
+      </div>`;
+    }).join('');
+
+    // Top IPs
+    document.getElementById('top-ips').innerHTML = data.top_ips.map((r, i) =>
+      `<tr><td>${i + 1}</td><td class="ip">${r.ip}</td><td>${r.count}</td></tr>`
+    ).join('');
+
+    // Credentials table
+    document.getElementById('creds-table').innerHTML = data.credentials.map(r => {
+      let parsed = {};
+      try { parsed = JSON.parse(r.data || '{}'); } catch {}
+      return `<tr>
+        <td>${fmt(r.timestamp)}</td>
+        <td class="ip">${esc(r.ip)}</td>
+        <td>${svcBadge(r.service)}</td>
+        <td style="font-family:monospace">${esc(parsed.username)}</td>
+        <td style="font-family:monospace;color:#f85149">${esc(parsed.password)}</td>
+      </tr>`;
+    }).join('');
+  }
+
+  async function loadEvents() {
+    const res = await fetch('/api/events');
+    if (!res.ok) return;
+    const events = await res.json();
+
+    document.getElementById('events-feed').innerHTML = events.map(e => {
+      let extra = '';
+      try {
+        const d = JSON.parse(e.data || '{}');
+        if (d.username) extra = ` · ${esc(d.username)}${d.password ? ':' + esc(d.password) : ''}`;
+        if (d.request) extra = ` · ${esc(d.request)}`;
+      } catch {}
+      const isCred = e.event_type === 'credential';
+      return `<div class="event-row ${isCred ? 'credential-event' : ''}">
+        <span class="ts">${fmt(e.timestamp)}</span>
+        <span class="svc">${svcBadge(e.service)}</span>
+        <span class="event-type ${isCred ? 'credential' : ''}">${esc(e.event_type)}</span>
+        <span class="msg">${esc(e.ip)}${extra}</span>
+      </div>`;
+    }).join('');
+
+    document.getElementById('last-updated').textContent =
+      'Updated ' + new Date().toLocaleTimeString();
+  }
+
+  function refresh() {
+    loadStats();
+    loadEvents();
+  }
+
+  refresh();
+  setInterval(refresh, 15000);
+</script>
+</body>
+</html>
