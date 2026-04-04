@@ -62,15 +62,50 @@
     .stat-card.highlight { border-color: #f85149; }
     .stat-card.highlight .value { color: #f85149; }
 
-    /* Two-column layout */
-    .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-bottom: 2rem; }
-    @media (max-width: 800px) { .two-col { grid-template-columns: 1fr; } }
+    /* Filters */
+    .filter-bar {
+      display: flex;
+      gap: 1rem;
+      margin-bottom: 1rem;
+      background: #161b22;
+      border: 1px solid #30363d;
+      padding: 0.75rem 1rem;
+      border-radius: 8px;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+    .filter-bar select, .filter-bar input {
+      background: #0d1117;
+      border: 1px solid #30363d;
+      color: #c9d1d9;
+      padding: 0.4rem 0.6rem;
+      border-radius: 4px;
+      font-size: 0.85rem;
+    }
+    .filter-bar button {
+      background: #21262d;
+      border: 1px solid #30363d;
+      color: #c9d1d9;
+      padding: 0.4rem 0.8rem;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 0.85rem;
+    }
+    .filter-bar button:hover { background: #30363d; }
+    .filter-bar .export-btn { background: #238636; border-color: #2ea043; color: white; margin-left: auto; }
+    .filter-bar .export-btn:hover { background: #2ea043; }
+
+    /* Grid layout */
+    .three-col { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 1rem; margin-bottom: 2rem; }
+    @media (max-width: 1000px) { .three-col { grid-template-columns: 1fr; } }
 
     .panel {
       background: #161b22;
       border: 1px solid #30363d;
       border-radius: 8px;
       overflow: hidden;
+      display: flex;
+      flex-direction: column;
     }
     .panel-header {
       padding: 0.75rem 1rem;
@@ -82,7 +117,7 @@
       justify-content: space-between;
       align-items: center;
     }
-    .panel-body { padding: 1rem; }
+    .panel-body { padding: 1rem; flex: 1; }
 
     /* Bar chart */
     .bar-row { display: flex; align-items: center; gap: 0.75rem; margin-bottom: 0.5rem; font-size: 0.8rem; }
@@ -93,15 +128,18 @@
     .bar-fill.http { background: #3fb950; }
     .bar-fill.ftp { background: #d29922; }
     .bar-fill.telnet { background: #bc8cff; }
+    .bar-fill.smtp { background: #f85149; }
+    .bar-fill.redis { background: #ff7b72; }
     .bar-count { width: 40px; color: #8b949e; font-size: 0.75rem; }
 
-    /* Top IPs table */
+    /* Tables */
     table { width: 100%; border-collapse: collapse; font-size: 0.82rem; }
     th { text-align: left; padding: 0.4rem 0.6rem; color: #8b949e; font-weight: 600; border-bottom: 1px solid #21262d; }
     td { padding: 0.5rem 0.6rem; border-bottom: 1px solid #21262d; }
     tr:last-child td { border-bottom: none; }
     tr:hover td { background: #1c2128; }
     .ip { font-family: monospace; color: #79c0ff; }
+    
     .service-badge {
       display: inline-block;
       padding: 0.1rem 0.5rem;
@@ -113,16 +151,20 @@
     .service-badge.HTTP   { background: #1a3726; color: #3fb950; }
     .service-badge.FTP    { background: #3d2e00; color: #d29922; }
     .service-badge.TELNET { background: #2d1f5e; color: #bc8cff; }
+    .service-badge.SMTP   { background: #3c1616; color: #f85149; }
+    .service-badge.REDIS  { background: #4c2323; color: #ff7b72; }
 
     .event-type { color: #8b949e; font-size: 0.75rem; }
     .event-type.credential { color: #f85149; font-weight: 600; }
+    .event-type.download_attempt { color: #d29922; font-weight: 600; }
+    .event-type.exec_attempt { color: #bc8cff; font-weight: 600; }
 
     /* Events feed */
-    #events-feed { font-size: 0.78rem; max-height: 420px; overflow-y: auto; }
+    #events-feed { font-size: 0.78rem; max-height: 500px; overflow-y: auto; }
     .event-row {
       display: flex;
       gap: 0.5rem;
-      padding: 0.45rem 0;
+      padding: 0.45rem 0.5rem;
       border-bottom: 1px solid #21262d;
       align-items: flex-start;
     }
@@ -133,6 +175,10 @@
     .event-row.credential-event { background: #1c1010; }
 
     .refresh-info { font-size: 0.7rem; color: #484f58; }
+
+    /* Geo live stream (SSE) */
+    #attack-sse-feed { font-size: 0.78rem; max-height: 200px; overflow-y: auto; font-family: monospace; }
+    #attack-sse-feed .sse-line { padding: 0.35rem 0; border-bottom: 1px solid #21262d; color: #8b949e; }
   </style>
 </head>
 <body>
@@ -148,15 +194,14 @@
   <!-- Stat cards -->
   <div class="stat-grid" id="stat-cards">
     <div class="stat-card"><div class="label">Total Events</div><div class="value" id="stat-total">—</div></div>
-    <div class="stat-card"><div class="label">SSH Events</div><div class="value" id="stat-ssh">—</div></div>
-    <div class="stat-card"><div class="label">HTTP Events</div><div class="value" id="stat-http">—</div></div>
-    <div class="stat-card"><div class="label">FTP Events</div><div class="value" id="stat-ftp">—</div></div>
-    <div class="stat-card"><div class="label">Telnet Events</div><div class="value" id="stat-telnet">—</div></div>
-    <div class="stat-card highlight"><div class="label">Credential Attempts</div><div class="value" id="stat-creds">—</div></div>
+    <div class="stat-card"><div class="label">SSH</div><div class="value" id="stat-ssh">—</div></div>
+    <div class="stat-card"><div class="label">HTTP</div><div class="value" id="stat-http">—</div></div>
+    <div class="stat-card"><div class="label">SMTP</div><div class="value" id="stat-smtp">—</div></div>
+    <div class="stat-card"><div class="label">Redis</div><div class="value" id="stat-redis">—</div></div>
+    <div class="stat-card highlight"><div class="label">Credentials</div><div class="value" id="stat-creds">—</div></div>
   </div>
 
-  <div class="two-col">
-
+  <div class="three-col">
     <!-- Activity by service -->
     <div class="panel">
       <div class="panel-header">Activity by Service</div>
@@ -166,7 +211,7 @@
     <!-- Top attacker IPs -->
     <div class="panel">
       <div class="panel-header">Top Attacker IPs</div>
-      <div class="panel-body" style="padding:0">
+      <div style="overflow-y:auto">
         <table>
           <thead><tr><th>#</th><th>IP Address</th><th>Events</th></tr></thead>
           <tbody id="top-ips"></tbody>
@@ -174,26 +219,47 @@
       </div>
     </div>
 
+    <!-- Top Countries -->
+    <div class="panel">
+      <div class="panel-header">Top Countries</div>
+      <div style="overflow-y:auto">
+        <table>
+          <thead><tr><th>#</th><th>Country</th><th>Events</th></tr></thead>
+          <tbody id="top-countries"></tbody>
+        </table>
+      </div>
+    </div>
   </div>
 
-  <!-- Credential dump -->
-  <div class="panel" style="margin-bottom:2rem">
-    <div class="panel-header">
-      Captured Credentials
-      <span class="refresh-info">auto-refreshes every 15s</span>
-    </div>
-    <div style="overflow-x:auto">
-      <table>
-        <thead><tr><th>Time (UTC)</th><th>IP</th><th>Service</th><th>Username</th><th>Password</th></tr></thead>
-        <tbody id="creds-table"></tbody>
-      </table>
-    </div>
+  <!-- Filters and Export -->
+  <div class="filter-bar">
+    <select id="filter-service" onchange="loadEvents()">
+      <option value="">All Services</option>
+      <option value="SSH">SSH</option>
+      <option value="HTTP">HTTP</option>
+      <option value="FTP">FTP</option>
+      <option value="TELNET">TELNET</option>
+      <option value="SMTP">SMTP</option>
+      <option value="REDIS">REDIS</option>
+    </select>
+    <select id="filter-type" onchange="loadEvents()">
+      <option value="">All Event Types</option>
+      <option value="connect">Connect</option>
+      <option value="credential">Credential</option>
+      <option value="exec_attempt">Exec Attempt</option>
+      <option value="download_attempt">Download Attempt</option>
+      <option value="email_attempt">Email Attempt</option>
+      <option value="trap_hit">Trap Hit</option>
+    </select>
+    <input type="text" id="filter-search" placeholder="Search IP..." onkeyup="if(event.key==='Enter') loadEvents()">
+    <button onclick="loadEvents()">Apply</button>
+    <button class="export-btn" onclick="window.location.href='/api/events/export.csv'">Export CSV</button>
   </div>
 
   <!-- Live event feed -->
-  <div class="panel">
+  <div class="panel" style="margin-bottom:2rem">
     <div class="panel-header">
-      Live Event Feed
+      Event Feed
       <span class="refresh-info">auto-refreshes every 15s</span>
     </div>
     <div class="panel-body">
@@ -201,10 +267,31 @@
     </div>
   </div>
 
+  <div class="two-col" style="display:grid; grid-template-columns: 1fr 1fr; gap:1rem; margin-bottom:2rem">
+      <!-- Credential dump -->
+      <div class="panel">
+        <div class="panel-header">Captured Credentials</div>
+        <div style="overflow-x:auto">
+          <table>
+            <thead><tr><th>Time (UTC)</th><th>IP</th><th>Service</th><th>User:Pass</th></tr></thead>
+            <tbody id="creds-table"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- Geo-tagged attacks (SSE) -->
+      <div class="panel">
+        <div class="panel-header">Live Attack Stream</div>
+        <div class="panel-body">
+          <div id="attack-sse-feed"></div>
+        </div>
+      </div>
+  </div>
+
 </main>
 
 <script>
-  const SERVICE_COLORS = { SSH: 'ssh', HTTP: 'http', FTP: 'ftp', TELNET: 'telnet' };
+  const SERVICE_COLORS = { SSH: 'ssh', HTTP: 'http', FTP: 'ftp', TELNET: 'telnet', SMTP: 'smtp', REDIS: 'redis' };
 
   function esc(str) {
     if (str == null) return '—';
@@ -235,9 +322,8 @@
     data.by_service.forEach(r => svcMap[r.service] = r.count);
     document.getElementById('stat-ssh').textContent    = svcMap['SSH']    || 0;
     document.getElementById('stat-http').textContent   = svcMap['HTTP']   || 0;
-    document.getElementById('stat-ftp').textContent    = svcMap['FTP']    || 0;
-    document.getElementById('stat-telnet').textContent = svcMap['TELNET'] || 0;
-
+    document.getElementById('stat-smtp').textContent   = svcMap['SMTP']   || 0;
+    document.getElementById('stat-redis').textContent  = svcMap['REDIS']  || 0;
     document.getElementById('stat-creds').textContent = data.credential_count;
 
     // Service bars
@@ -258,21 +344,37 @@
     ).join('');
 
     // Credentials table
-    document.getElementById('creds-table').innerHTML = data.credentials.map(r => {
+    document.getElementById('creds-table').innerHTML = data.recent_credentials.map(r => {
       let parsed = {};
       try { parsed = JSON.parse(r.data || '{}'); } catch {}
       return `<tr>
         <td>${fmt(r.timestamp)}</td>
         <td class="ip">${esc(r.ip)}</td>
         <td>${svcBadge(r.service)}</td>
-        <td style="font-family:monospace">${esc(parsed.username)}</td>
-        <td style="font-family:monospace;color:#f85149">${esc(parsed.password)}</td>
+        <td style="font-family:monospace">${esc(parsed.username || '—')}:${esc(parsed.password || '—')}</td>
       </tr>`;
     }).join('');
+
+    const geoRes = await fetch('/api/geo-stats');
+    if (geoRes.ok) {
+        const geoData = await geoRes.json();
+        document.getElementById('top-countries').innerHTML = geoData.map((r, i) =>
+            `<tr><td>${i + 1}</td><td>${esc(r.country)}</td><td>${r.count}</td></tr>`
+        ).join('');
+    }
   }
 
   async function loadEvents() {
-    const res = await fetch('/api/events');
+    const svc = document.getElementById('filter-service').value;
+    const etype = document.getElementById('filter-type').value;
+    const search = document.getElementById('filter-search').value;
+    
+    let url = '/api/events?limit=100';
+    if (svc) url += `&service=${encodeURIComponent(svc)}`;
+    if (etype) url += `&event_type=${encodeURIComponent(etype)}`;
+    if (search) url += `&search=${encodeURIComponent(search)}`;
+
+    const res = await fetch(url);
     if (!res.ok) return;
     const events = await res.json();
 
@@ -280,14 +382,26 @@
       let extra = '';
       try {
         const d = JSON.parse(e.data || '{}');
-        if (d.username) extra = ` · ${esc(d.username)}${d.password ? ':' + esc(d.password) : ''}`;
-        if (d.request) extra = ` · ${esc(d.request)}`;
+        if (e.event_type === 'credential') {
+            extra = ` · ${esc(d.username || '—')}:${esc(d.password || '—')}`;
+        } else if (e.event_type === 'email_attempt') {
+            extra = ` · From: ${esc(d.from)} · Sub: ${esc(d.subject)}`;
+        } else if (e.event_type === 'exec_attempt' || e.event_type === 'download_attempt') {
+            extra = ` · Cmd: ${esc(d.command)}`;
+        } else if (e.event_type === 'request') {
+            extra = ` · ${esc(d.method)} ${esc(d.path)}`;
+        } else if (e.event_type === 'trap_hit') {
+            extra = ` · Path: ${esc(d.path)}`;
+        }
       } catch {}
+      
       const isCred = e.event_type === 'credential';
+      const etypeCls = e.event_type.replace('_', '-');
+      
       return `<div class="event-row ${isCred ? 'credential-event' : ''}">
         <span class="ts">${fmt(e.timestamp)}</span>
         <span class="svc">${svcBadge(e.service)}</span>
-        <span class="event-type ${isCred ? 'credential' : ''}">${esc(e.event_type)}</span>
+        <span class="event-type ${etypeCls}">${esc(e.event_type)}</span>
         <span class="msg">${esc(e.ip)}${extra}</span>
       </div>`;
     }).join('');
@@ -303,6 +417,27 @@
 
   refresh();
   setInterval(refresh, 15000);
+
+  (function sseAttackStream() {
+    const feed = document.getElementById('attack-sse-feed');
+    if (!feed || !window.EventSource) return;
+    const maxLines = 80;
+    try {
+      const es = new EventSource('/api/attack-stream');
+      es.onmessage = (ev) => {
+        try {
+          const o = JSON.parse(ev.data);
+          const div = document.createElement('div');
+          div.className = 'sse-line';
+          div.innerHTML = `${esc(o.ip)} · ${esc(o.country || '—')} · ${esc(o.service)} ` +
+            `<span style="color:#484f58">(${Number(o.src_lat).toFixed(2)},${Number(o.src_lon).toFixed(2)} → ${Number(o.dst_lat).toFixed(2)},${Number(o.dst_lon).toFixed(2)})</span>`;
+          feed.prepend(div);
+          while (feed.children.length > maxLines) feed.removeChild(feed.lastChild);
+        } catch (e) { /* ignore bad frame */ }
+      };
+      es.onerror = () => { /* browser reconnects */ };
+    } catch (e) { /* SSE unsupported */ }
+  })();
 </script>
 </body>
 </html>

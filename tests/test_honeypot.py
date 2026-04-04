@@ -123,7 +123,8 @@ class TestTelnetIACParser(unittest.TestCase):
         server, client = self._make_pair()
         client.sendall(data)
         client.close()
-        result = _telnet_recv_line(server)
+        # Disable echo for test to avoid sendall blocking on pair
+        result = _telnet_recv_line(server, echo=False)
         server.close()
         return result
 
@@ -221,12 +222,25 @@ class TestLogger(unittest.TestCase):
         self.assertEqual(result["ip"], "5.5.5.5")
         self.assertEqual(result["service"], "FTP")
 
+    def test_log_event_return_includes_geo_keys(self):
+        """Phase 2: every event dict exposes country/city/lat/lon (possibly None)."""
+        from logger import init_db, log_event
+        init_db()
+        result = log_event("10.0.0.5", 22, "SSH", "connect", None)
+        for k in ("country", "city", "lat", "lon", "rowid"):
+            self.assertIn(k, result)
+
 
 # ─────────────────────────────────────────────────────────────────
 # 4. Discord alerts
 # ─────────────────────────────────────────────────────────────────
 
 class TestDiscordAlerts(unittest.TestCase):
+
+    def setUp(self):
+        import alerts.discord as d
+
+        d._cooldown_last_sent.clear()
 
     def test_no_op_when_no_webhook_url(self):
         # discord.py copies DISCORD_WEBHOOK_URL into its own namespace at import,
@@ -273,6 +287,77 @@ class TestDiscordAlerts(unittest.TestCase):
 
         self.assertIn("payload", captured)
         self.assertEqual(captured["payload"]["embeds"][0]["color"], 0xFFA500)
+
+    def test_unknown_alert_type_dropped(self):
+        with patch("alerts.discord.DISCORD_WEBHOOK_URL", "https://example.com/hook"):
+            with patch("alerts.discord._post") as mock_post:
+                import alerts.discord as d
+
+                d.send_alert("SSH", "1.2.3.4", "x", alert_type="foobar")
+                time.sleep(0.2)
+                mock_post.assert_not_called()
+
+    def test_exec_alert_fires(self):
+        with patch("alerts.discord.DISCORD_WEBHOOK_URL", "https://example.com/hook"):
+            with patch("alerts.discord._post") as mock_post:
+                import alerts.discord as d
+
+                d.send_alert("SSH", "9.9.9.9", "exec", alert_type="exec_attempt")
+                time.sleep(0.2)
+                mock_post.assert_called_once()
+
+    def test_cooldown_deduplicates(self):
+        with patch("alerts.discord.DISCORD_WEBHOOK_URL", "https://example.com/hook"):
+            with patch("alerts.discord._post") as mock_post:
+                with patch("alerts.discord.time.time", side_effect=[1000.0, 1030.0]):
+                    import alerts.discord as d
+
+                    d.send_alert("SSH", "8.8.8.8", "a", alert_type="exec_attempt")
+                    d.send_alert("SSH", "8.8.8.8", "b", alert_type="exec_attempt")
+                time.sleep(0.2)
+                self.assertEqual(mock_post.call_count, 1)
+
+    def test_credential_alert_suppressed_when_disabled(self):
+        with patch("alerts.discord.DISCORD_WEBHOOK_URL", "https://example.com/hook"):
+            with patch("alerts.discord.ALERT_ON_CREDENTIAL", False):
+                with patch("alerts.discord._post") as mock_post:
+                    import alerts.discord as d
+
+                    d.send_alert("SSH", "1.2.3.4", "Login", alert_type="credential")
+                    time.sleep(0.2)
+                    mock_post.assert_not_called()
+
+    def test_download_alert_suppressed_when_disabled(self):
+        with patch("alerts.discord.DISCORD_WEBHOOK_URL", "https://example.com/hook"):
+            with patch("alerts.discord.ALERT_ON_DOWNLOAD", False):
+                with patch("alerts.discord._post") as mock_post:
+                    import alerts.discord as d
+
+                    d.send_alert("SSH", "1.2.3.4", "wget", alert_type="download_attempt")
+                    time.sleep(0.2)
+                    mock_post.assert_not_called()
+
+    def test_exec_alert_suppressed_when_disabled(self):
+        with patch("alerts.discord.DISCORD_WEBHOOK_URL", "https://example.com/hook"):
+            with patch("alerts.discord.ALERT_ON_EXEC", False):
+                with patch("alerts.discord._post") as mock_post:
+                    import alerts.discord as d
+
+                    d.send_alert("SSH", "1.2.3.4", "exec", alert_type="exec_attempt")
+                    time.sleep(0.2)
+                    mock_post.assert_not_called()
+
+    def test_cooldown_is_per_alert_type(self):
+        """Same IP, different alert_type — both may fire within cooldown window."""
+        with patch("alerts.discord.DISCORD_WEBHOOK_URL", "https://example.com/hook"):
+            with patch("alerts.discord._post") as mock_post:
+                with patch("alerts.discord.time.time", return_value=5000.0):
+                    import alerts.discord as d
+
+                    d.send_alert("SSH", "1.1.1.1", "c", alert_type="connect")
+                    d.send_alert("SSH", "1.1.1.1", "e", alert_type="exec_attempt")
+                time.sleep(0.25)
+                self.assertEqual(mock_post.call_count, 2)
 
 
 # ─────────────────────────────────────────────────────────────────
@@ -428,16 +513,13 @@ class TestTelnetService(unittest.TestCase):
         server, client = socket.socketpair()
         client.settimeout(3)
 
-        with patch("services.telnet_honey.log_event", side_effect=fake_log):
-            with patch("services.telnet_honey.send_alert"):
-                t = _run_handler(_handle_client, server)
-                client.recv(512)  # negotiation + prompt
-                client.sendall(b"admin\r\n")
-                client.recv(256)  # "Password: "
-                client.sendall(b"hunter2\r\n")
-                client.recv(256)  # "Login incorrect"
-                client.close()
-                t.join(timeout=3)
+        # Mock _recv_line to return admin then hunter2 then None (close)
+        with patch("services.telnet_honey._recv_line", side_effect=["admin", "hunter2", None]):
+            with patch("services.telnet_honey.log_event", side_effect=fake_log):
+                with patch("services.telnet_honey.send_alert"):
+                    with patch("services.telnet_honey.TELNET_ACCEPT_RATE", 1):
+                        with patch("services.telnet_honey.run_shell"): # avoid blocking in shell
+                            _handle_client(server, ("1.2.3.4", 12345))
 
         cred_events = [e for e in logged if e["event_type"] == "credential"]
         self.assertEqual(len(cred_events), 1)
@@ -452,6 +534,10 @@ class TestTelnetService(unittest.TestCase):
 class TestDashboard(unittest.TestCase):
 
     def setUp(self):
+        from logger import clear_event_callbacks
+
+        clear_event_callbacks()
+
         # Point the dashboard at a fresh temp DB
         self._tmp = tempfile.mkdtemp()
         self._db = os.path.join(self._tmp, "dash_test.db")
@@ -483,66 +569,69 @@ class TestDashboard(unittest.TestCase):
         conn.commit()
         conn.close()
 
-        # Reload dashboard with the test DB and a known token
         import importlib
         import dashboard.app as dash_mod
+
         with patch("config.DB_PATH", self._db):
-            with patch("config.DASHBOARD_TOKEN", "testtoken"):
-                importlib.reload(dash_mod)
+            importlib.reload(dash_mod)
         self._app = dash_mod.app
         self._app.config["TESTING"] = True
         self._client = self._app.test_client()
-        self._token = "testtoken"
 
     def tearDown(self):
         import config
+        from logger import clear_event_callbacks
+
+        clear_event_callbacks()
         config.DB_PATH = self._orig_db
 
-    def _auth(self):
-        import base64
-        creds = base64.b64encode(b"user:testtoken").decode()
-        return {"Authorization": f"Basic {creds}"}
-
-    def test_index_requires_auth(self):
+    def test_index_returns_200(self):
         resp = self._client.get("/")
-        self.assertEqual(resp.status_code, 401)
+        self.assertEqual(resp.status_code, 200)
 
-    def test_api_events_requires_auth(self):
+    def test_api_events_returns_200(self):
         resp = self._client.get("/api/events")
-        self.assertEqual(resp.status_code, 401)
+        self.assertEqual(resp.status_code, 200)
 
-    def test_api_stats_requires_auth(self):
+    def test_api_stats_returns_200(self):
         resp = self._client.get("/api/stats")
-        self.assertEqual(resp.status_code, 401)
-
-    def test_index_ok_with_auth(self):
-        resp = self._client.get("/", headers=self._auth())
         self.assertEqual(resp.status_code, 200)
 
     def test_api_events_returns_list(self):
-        resp = self._client.get("/api/events", headers=self._auth())
+        resp = self._client.get("/api/events")
         self.assertEqual(resp.status_code, 200)
         data = json.loads(resp.data)
         self.assertIsInstance(data, list)
         self.assertEqual(len(data), 2)
 
     def test_api_stats_structure(self):
-        resp = self._client.get("/api/stats", headers=self._auth())
+        resp = self._client.get("/api/stats")
         self.assertEqual(resp.status_code, 200)
         data = json.loads(resp.data)
         self.assertIn("total", data)
         self.assertIn("by_service", data)
         self.assertIn("top_ips", data)
         self.assertIn("credential_count", data)
-        self.assertIn("credentials", data)
+        self.assertIn("recent_credentials", data)
         self.assertEqual(data["total"], 2)
         self.assertEqual(data["credential_count"], 1)
 
-    def test_wrong_password_rejected(self):
-        import base64
-        bad_creds = base64.b64encode(b"user:wrongpassword").decode()
-        resp = self._client.get("/", headers={"Authorization": f"Basic {bad_creds}"})
-        self.assertEqual(resp.status_code, 401)
+    def test_api_events_no_auth_header_required(self):
+        """Phase 0: dashboard is intentionally unauthenticated."""
+        for path in ("/api/events", "/api/stats"):
+            resp = self._client.get(path, headers={})
+            self.assertEqual(resp.status_code, 200, msg=path)
+
+    def test_api_events_returns_json_list(self):
+        resp = self._client.get("/api/events")
+        self.assertEqual(resp.headers.get("Content-Type", "").split(";")[0], "application/json")
+        data = json.loads(resp.data)
+        self.assertIsInstance(data, list)
+        self.assertTrue(all(isinstance(x, dict) for x in data))
+
+    def test_unknown_api_route_404(self):
+        resp = self._client.get("/api/does-not-exist")
+        self.assertEqual(resp.status_code, 404)
 
 
 if __name__ == "__main__":

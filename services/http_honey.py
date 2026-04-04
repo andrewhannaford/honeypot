@@ -2,6 +2,7 @@ import socket
 import threading
 import time
 import traceback
+import urllib.parse
 from datetime import datetime, timezone
 import ratelimit
 from logger import log_event
@@ -19,20 +20,57 @@ after installation on Ubuntu systems. It is based on the equivalent page on Debi
 </body>
 </html>"""
 
+_WP_LOGIN_FORM = b"""<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="UTF-8"><title>Log In &lsaquo; WordPress</title></head>
+<body class="login">
+<div id="login">
+<h1><a href="https://wordpress.org/">Powered by WordPress</a></h1>
+<form name="loginform" id="loginform" action="/wp-login.php" method="post">
+    <p><label for="user_login">Username or Email Address<br />
+    <input type="text" name="log" id="user_login" class="input" value="" size="20" /></label></p>
+    <p><label for="user_pass">Password<br />
+    <input type="password" name="pwd" id="user_pass" class="input" value="" size="20" /></label></p>
+    <p class="submit"><input type="submit" name="wp-submit" id="wp-submit" class="button button-primary" value="Log In" /></p>
+</form>
+</div>
+</body>
+</html>"""
+
+_FAKE_ENV = b"""APP_NAME=Laravel
+APP_ENV=production
+APP_KEY=base64:7p+N9p8Sj7Xk4f6R8d2G6H4J2L5N8P0R2T4V6X8Z0B2=
+APP_DEBUG=false
+APP_URL=http://localhost
+
+DB_CONNECTION=mysql
+DB_HOST=127.0.0.1
+DB_PORT=3306
+DB_DATABASE=forge
+DB_USERNAME=forge
+DB_PASSWORD=secret_password_123
+
+AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE
+AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY
+"""
+
 _MAX_HEADER_BYTES = 16384  # 16 KB ceiling for request headers
 
 
-def _build_response(status="200 OK", body=_FAKE_HTML, content_type="text/html"):
+def _build_response(status="200 OK", body=_FAKE_HTML, content_type="text/html", location=None):
     date = datetime.now(timezone.utc).strftime("%a, %d %b %Y %H:%M:%S GMT")
-    header = (
-        f"HTTP/1.1 {status}\r\n"
-        f"Server: {HTTP_SERVER_HEADER}\r\n"
-        f"Date: {date}\r\n"
-        f"Content-Type: {content_type}; charset=UTF-8\r\n"
-        f"Content-Length: {len(body)}\r\n"
-        f"Connection: close\r\n"
-        f"\r\n"
-    ).encode()
+    header_lines = [
+        f"HTTP/1.1 {status}",
+        f"Server: {HTTP_SERVER_HEADER}",
+        f"Date: {date}",
+        f"Content-Type: {content_type}; charset=UTF-8",
+        f"Content-Length: {len(body)}",
+        f"Connection: close",
+    ]
+    if location:
+        header_lines.append(f"Location: {location}")
+    
+    header = ("\r\n".join(header_lines) + "\r\n\r\n").encode()
     return header + body
 
 
@@ -40,12 +78,8 @@ def _handle_client(client_sock, client_addr):
     client_ip = client_addr[0]
     try:
         log_event(client_ip, HTTP_PORT, "HTTP", "connect")
-        # HTTP connect alerts suppressed intentionally — scanners generate extreme volume
-
         client_sock.settimeout(30)
 
-        # Read until we have a complete HTTP header block (\r\n\r\n).
-        # A single recv() may not contain the full headers if TCP splits the data.
         raw = b""
         while b"\r\n\r\n" not in raw:
             chunk = client_sock.recv(4096)
@@ -53,11 +87,21 @@ def _handle_client(client_sock, client_addr):
                 return
             raw += chunk
             if len(raw) > _MAX_HEADER_BYTES:
-                break  # Oversized request — log what we have and respond
+                break
 
         raw_str = raw.decode("utf-8", errors="ignore")
         lines = raw_str.split("\r\n")
         request_line = lines[0] if lines else ""
+        if not request_line:
+            return
+
+        method, full_path, _ = (request_line + "   ").split(" ", 2)
+        
+        # Normalize path
+        parsed_url = urllib.parse.urlparse(full_path)
+        path = parsed_url.path.lower().rstrip("/")
+        if not path:
+            path = "/"
 
         headers = {}
         for line in lines[1:]:
@@ -65,20 +109,43 @@ def _handle_client(client_sock, client_addr):
                 k, v = line.split(": ", 1)
                 headers[k] = v
 
-        parts = raw_str.split("\r\n\r\n", 1)
-        body = parts[1] if len(parts) > 1 else ""
+        body_pos = raw_str.find("\r\n\r\n")
+        body = raw_str[body_pos+4:] if body_pos != -1 else ""
 
-        log_event(client_ip, HTTP_PORT, "HTTP", "request", {
-            "request": request_line,
-            "user_agent": headers.get("User-Agent", ""),
-            "host": headers.get("Host", ""),
-            "body": body[:512],
-        })
-        send_alert("HTTP", client_ip, f"Request: `{request_line}`", alert_type="connect")
+        # Dispatch traps
+        if path == "/wp-login.php":
+            if method.upper() == "POST":
+                # Extract credentials
+                params = urllib.parse.parse_qs(body)
+                user = params.get("log", [""])[0]
+                pw = params.get("pwd", [""])[0]
+                log_event(client_ip, HTTP_PORT, "HTTP", "credential", {"username": user, "password": pw, "path": path})
+                send_alert("HTTP", client_ip, f"Login (WP): `{user}` / `{pw}`", alert_type="credential")
+                client_sock.sendall(_build_response(status="200 OK", body=b"Login failed"))
+            else:
+                log_event(client_ip, HTTP_PORT, "HTTP", "trap_hit", {"path": path})
+                client_sock.sendall(_build_response(status="200 OK", body=_WP_LOGIN_FORM))
+        elif path == "/wp-admin":
+            log_event(client_ip, HTTP_PORT, "HTTP", "trap_hit", {"path": path})
+            client_sock.sendall(_build_response(status="301 Moved Permanently", body=b"", location="/wp-login.php"))
+        elif path == "/.env":
+            log_event(client_ip, HTTP_PORT, "HTTP", "trap_hit", {"path": path})
+            client_sock.sendall(_build_response(status="200 OK", body=_FAKE_ENV, content_type="text/plain"))
+        else:
+            # Default response
+            log_event(client_ip, HTTP_PORT, "HTTP", "request", {
+                "method": method,
+                "path": full_path,
+                "user_agent": headers.get("User-Agent", ""),
+                "host": headers.get("Host", ""),
+                "body": body[:512],
+            })
+            # No alert for standard requests to avoid flooding
+            client_sock.sendall(_build_response())
 
-        client_sock.sendall(_build_response())
     except Exception:
-        traceback.print_exc()
+        # traceback.print_exc()
+        pass
     finally:
         try:
             client_sock.close()

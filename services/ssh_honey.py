@@ -3,13 +3,16 @@ import socket
 import threading
 import time
 import traceback
+import re
 import paramiko
 import ratelimit
 from logger import log_event
 from alerts.discord import send_alert
-from config import SSH_PORT, SSH_BANNER
+from config import SSH_PORT, SSH_BANNER, SSH_ACCEPT_RATE
+from services.fake_shell import run_shell
 
 KEY_PATH = "data/ssh_host_key"
+URL_REGEX = re.compile(r"https?://\S+")
 
 
 def _get_host_key():
@@ -26,20 +29,55 @@ HOST_KEY = _get_host_key()
 class _SSHServer(paramiko.ServerInterface):
     def __init__(self, client_ip):
         self.client_ip = client_ip
+        self.attempt_count = 0
+        self.username = None
 
     def check_channel_request(self, kind, chanid):
         if kind == "session":
             return paramiko.OPEN_SUCCEEDED
         return paramiko.OPEN_FAILED_ADMINISTRATIVELY_PROHIBITED
 
+    def check_channel_exec_request(self, channel, command):
+        try:
+            cmd_str = command.decode("utf-8", errors="replace")
+            urls = URL_REGEX.findall(cmd_str)
+            is_download = bool(urls) or "wget " in cmd_str or "curl " in cmd_str
+
+            event_type = "download_attempt" if is_download else "exec_attempt"
+            data = {"command": cmd_str}
+            if urls:
+                data["urls"] = urls
+
+            log_event(self.client_ip, SSH_PORT, "SSH", event_type, data)
+            send_alert("SSH", self.client_ip, f"Exec: `{cmd_str}`", alert_type=event_type)
+
+            channel.send_exit_status(0)
+            channel.close()
+            return True
+        except Exception:
+            traceback.print_exc()
+            return False
+
+    def check_channel_pty_request(self, channel, term, width, height, pixelwidth, pixelheight, modes):
+        return True
+
+    def check_channel_shell_request(self, channel):
+        return True
+
     def check_auth_password(self, username, password):
+        self.username = username
+        self.attempt_count += 1
         log_event(self.client_ip, SSH_PORT, "SSH", "credential",
                   {"username": username, "password": password})
         send_alert("SSH", self.client_ip, f"Login attempt: `{username}` / `{password}`",
                    alert_type="credential")
+
+        if self.attempt_count >= SSH_ACCEPT_RATE:
+            return paramiko.AUTH_SUCCESSFUL
         return paramiko.AUTH_FAILED
 
     def check_auth_publickey(self, username, key):
+        self.username = username
         log_event(self.client_ip, SSH_PORT, "SSH", "pubkey_attempt",
                   {"username": username, "key_type": key.get_name()})
         send_alert("SSH", self.client_ip,
@@ -65,13 +103,49 @@ def _handle_client(client_sock, client_addr):
         server = _SSHServer(client_ip)
         transport.start_server(server=server)
 
-        # Wait up to 30 s for auth attempts then close
-        channel = transport.accept(30)
+        # Wait up to 60s for auth and channel requests
+        channel = transport.accept(60)
         if channel:
-            channel.send("Permission denied.\r\n")
+            # If we are here, auth succeeded and a channel was opened.
+            # Set a timeout for interactive inactivity
+            channel.settimeout(120)
+
+            def send_fn(x):
+                try:
+                    channel.send(x.encode("utf-8", errors="replace"))
+                except Exception:
+                    pass
+
+            def recv_line_fn():
+                buffer = b""
+                while True:
+                    try:
+                        char = channel.recv(1)
+                        if not char:
+                            return None
+                        if char in (b"\r", b"\n"):
+                            send_fn("\r\n")
+                            return buffer.decode("utf-8", errors="replace")
+                        if char in (b"\x7f", b"\x08"):  # Backspace
+                            if len(buffer) > 0:
+                                buffer = buffer[:-1]
+                                send_fn("\b \b")
+                            continue
+                        if char == b"\x1b":  # ANSI escape (basic)
+                            # Try to consume [A, [B, etc.
+                            channel.recv(2)
+                            continue
+                        buffer += char
+                        send_fn(char.decode("utf-8", errors="replace"))
+                    except Exception:
+                        return None
+
+            run_shell(send_fn, recv_line_fn, client_ip, SSH_PORT, "SSH", server.username)
             channel.close()
+
     except Exception:
-        traceback.print_exc()
+        # traceback.print_exc()
+        pass
     finally:
         if transport:
             try:
