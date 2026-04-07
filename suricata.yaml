@@ -1,0 +1,41 @@
+%YAML 1.1
+---
+
+# Suricata Configuration — Honeypot
+# Set SURICATA_IFACE in .env to match your network interface (default: ens33)
+
+vars:
+  address-groups:
+    HOME_NET: "any"
+    EXTERNAL_NET: "any"
+  port-groups:
+    HTTP_PORTS: "80"
+    SHELLCODE_PORTS: "!80"
+
+outputs:
+  - eve-log:
+      enabled: yes
+      filetype: regular
+      filename: eve.json
+      types:
+        - alert
+        - stats:
+            totals: yes
+            threads: no
+            deltas: no
+
+logging:
+  default-log-level: notice
+  outputs:
+    - console:
+        enabled: yes
+
+default-rule-path: /var/lib/suricata/rules
+rule-files:
+  - suricata.rules
+
+af-packet:
+  - interface: default
+    cluster-id: 99
+    cluster-type: cluster_flow
+    defrag: yes

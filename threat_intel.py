@@ -1,3 +1,4 @@
+import atexit
 import threading
 import time
 import sqlite3
@@ -12,6 +13,7 @@ _CACHE_TTL = 86400  # 24 hours
 
 # Thread pool for non-blocking lookups
 _executor = ThreadPoolExecutor(max_workers=4)
+atexit.register(_executor.shutdown, wait=False)
 
 def _update_db(rowid, score):
     """Updates the abuse_score column for a specific event row."""

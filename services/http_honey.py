@@ -6,6 +6,7 @@ import urllib.parse
 from datetime import datetime, timezone
 import ratelimit
 from logger import log_event
+from payloads import save_payload
 from alerts.discord import send_alert
 from config import HTTP_PORT, HTTP_SERVER_HEADER
 
@@ -133,13 +134,19 @@ def _handle_client(client_sock, client_addr):
             client_sock.sendall(_build_response(status="200 OK", body=_FAKE_ENV, content_type="text/plain"))
         else:
             # Default response
-            log_event(client_ip, HTTP_PORT, "HTTP", "request", {
+            event = log_event(client_ip, HTTP_PORT, "HTTP", "request", {
                 "method": method,
                 "path": full_path,
                 "user_agent": headers.get("User-Agent", ""),
                 "host": headers.get("Host", ""),
                 "body": body[:512],
             })
+            
+            # Capture POST body as payload
+            if method.upper() == "POST" and body:
+                save_payload(client_ip, "HTTP", body.encode(), event_id=event.get("rowid"))
+                send_alert("HTTP", client_ip, f"Captured POST payload from `{full_path}`", alert_type="download_attempt")
+            
             # No alert for standard requests to avoid flooding
             client_sock.sendall(_build_response())
 

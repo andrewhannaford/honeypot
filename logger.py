@@ -71,6 +71,41 @@ def init_db():
             raw       TEXT
         )
     """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS payloads (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp   TEXT NOT NULL,
+            event_id    INTEGER,
+            ip          TEXT NOT NULL,
+            service     TEXT NOT NULL,
+            filename    TEXT NOT NULL,
+            local_path  TEXT NOT NULL,
+            file_size   INTEGER,
+            md5         TEXT,
+            sha256      TEXT,
+            mime_type   TEXT,
+            vt_score    TEXT,
+            FOREIGN KEY(event_id) REFERENCES events(id)
+        )
+    """)
+    # Migrate existing payloads tables that predate the vt_score column
+    _add_column_if_missing(conn, "payloads", "vt_score", "TEXT")
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS custom_detections (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            service         TEXT NOT NULL,
+            port            INTEGER NOT NULL,
+            label           TEXT NOT NULL,
+            desc            TEXT,
+            event_type      TEXT NOT NULL,
+            mitre_id        TEXT,
+            mitre_technique TEXT,
+            mitre_tactic    TEXT,
+            mitre_url       TEXT,
+            created_at      TEXT NOT NULL
+        )
+    """)
+    _add_column_if_missing(conn, "custom_detections", "query", "TEXT")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_events_timestamp ON events(timestamp)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_events_ip ON events(ip)")
     conn.execute(

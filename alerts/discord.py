@@ -72,6 +72,7 @@ def send_alert(service, ip, message, alert_type="connect"):
     color = 0xFF4444 if alert_type == "credential" else 0xFFA500
 
     payload = {
+        "content": "@everyone" if alert_type == "credential" else "",
         "embeds": [
             {
                 "title": f"\U0001f6a8 Honeypot Alert \u2014 {service}",

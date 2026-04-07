@@ -6,13 +6,25 @@ services:
     environment:
       - DISCORD_WEBHOOK_URL=${DISCORD_WEBHOOK_URL:-}
       - ABUSEIPDB_API_KEY=${ABUSEIPDB_API_KEY:-}
+      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
       - SERVER_LAT=${SERVER_LAT:-51.5074}
       - SERVER_LON=${SERVER_LON:--0.1278}
       - SSH_ACCEPT_RATE=${SSH_ACCEPT_RATE:-5}
       - TELNET_ACCEPT_RATE=${TELNET_ACCEPT_RATE:-3}
     volumes:
-      - honeypot-data:/app/data
-      - honeypot-logs:/app/logs
+      - ./data:/app/data
+      - ./logs:/app/logs
+    restart: unless-stopped
+
+  suricata:
+    image: jasonish/suricata:latest
+    network_mode: host
+    cap_add: [NET_ADMIN, NET_RAW, SYS_NICE]
+    command: --af-packet=${SURICATA_IFACE:-ens33}
+    volumes:
+      - ./logs/suricata:/var/log/suricata
+      - ./suricata.yaml:/etc/suricata/suricata.yaml
+      - ./suricata.rules:/var/lib/suricata/rules/suricata.rules
     restart: unless-stopped
 
 volumes:

@@ -10,6 +10,7 @@ from logger import log_event
 from alerts.discord import send_alert
 from config import SSH_PORT, SSH_BANNER, SSH_ACCEPT_RATE
 from services.fake_shell import run_shell
+from payloads import save_payload
 
 KEY_PATH = "data/ssh_host_key"
 URL_REGEX = re.compile(r"https?://\S+")
@@ -48,8 +49,9 @@ class _SSHServer(paramiko.ServerInterface):
             if urls:
                 data["urls"] = urls
 
-            log_event(self.client_ip, SSH_PORT, "SSH", event_type, data)
+            event = log_event(self.client_ip, SSH_PORT, "SSH", event_type, data)
             send_alert("SSH", self.client_ip, f"Exec: `{cmd_str}`", alert_type=event_type)
+            save_payload(self.client_ip, "SSH", command, event_id=event.get("rowid"))
 
             channel.send_exit_status(0)
             channel.close()

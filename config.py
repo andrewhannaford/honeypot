@@ -45,6 +45,12 @@ DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL", "")
 # AbuseIPDB API key — set via environment variable
 ABUSEIPDB_API_KEY = os.environ.get("ABUSEIPDB_API_KEY", "")
 
+# Gemini API key for LLM-enhanced fake shell
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
+
+# VirusTotal API key for payload analysis
+VIRUSTOTAL_API_KEY = os.environ.get("VIRUSTOTAL_API_KEY", "")
+
 # Alert toggles (env: 1/true vs 0/false/no/off)
 ALERT_ON_CONNECT = _env_bool("ALERT_ON_CONNECT", True)
 ALERT_ON_CREDENTIAL = _env_bool("ALERT_ON_CREDENTIAL", True)

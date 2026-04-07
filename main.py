@@ -6,6 +6,7 @@ from services.ftp_honey import start_ftp_server
 from services.telnet_honey import start_telnet_server
 from services.smtp_honey import start_smtp_server
 from services.redis_honey import start_redis_server
+from suricata_logger import start_suricata_logger
 from dashboard.app import start_dashboard
 from logger import init_db, register_event_callback
 from threat_intel import enrich_event
@@ -17,6 +18,7 @@ SERVICES = [
     ("TELNET", start_telnet_server),
     ("SMTP", start_smtp_server),
     ("REDIS", start_redis_server),
+    ("SuricataLogger", start_suricata_logger),
     ("Dashboard", start_dashboard),
 ]
 

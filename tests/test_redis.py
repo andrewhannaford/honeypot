@@ -32,13 +32,41 @@ class TestRedisHoney(unittest.TestCase):
         mock_log.assert_any_call("1.2.3.4", 6379, "REDIS", "credential", {"password": "pass123"})
         self.sock.sendall.assert_any_call(b"+OK\r\n")
 
+    @patch("services.redis_honey.save_payload")
     @patch("services.redis_honey.log_event")
-    def test_unknown_command_logs(self, mock_log):
+    def test_unknown_command_logs_and_saves_payload(self, mock_log, mock_save):
+        mock_log.return_value = {"rowid": 1}
         self._set_data(b"FLUSHALL\r\n")
         _handle_client(self.sock, self.addr)
-        
+
         mock_log.assert_any_call("1.2.3.4", 6379, "REDIS", "command", {"cmd": "FLUSHALL"})
         self.sock.sendall.assert_any_call(b"+OK\r\n")
+        mock_save.assert_called_once()
+
+    @patch("services.redis_honey.save_payload")
+    @patch("services.redis_honey.log_event")
+    def test_set_command_saves_payload(self, mock_log, mock_save):
+        mock_log.return_value = {"rowid": 2}
+        # RESP: SET cron "* * * * * /bin/sh"
+        data = b"*3\r\n$3\r\nSET\r\n$4\r\ncron\r\n$18\r\n* * * * * /bin/sh\r\n"
+        self._set_data(data)
+        _handle_client(self.sock, self.addr)
+
+        mock_log.assert_any_call("1.2.3.4", 6379, "REDIS", "set_attempt", unittest.mock.ANY)
+        mock_save.assert_called_once()
+        saved_data = mock_save.call_args[0][2]
+        self.assertIn(b"* * * * *", saved_data)
+
+    @patch("services.redis_honey.save_payload")
+    @patch("services.redis_honey.log_event")
+    def test_eval_command_saves_payload(self, mock_log, mock_save):
+        mock_log.return_value = {"rowid": 3}
+        # Inline EVAL command
+        self._set_data(b"EVAL return 1 0\r\n")
+        _handle_client(self.sock, self.addr)
+
+        mock_log.assert_any_call("1.2.3.4", 6379, "REDIS", "eval_attempt", unittest.mock.ANY)
+        mock_save.assert_called_once()
 
 if __name__ == "__main__":
     unittest.main()
