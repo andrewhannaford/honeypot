@@ -1415,15 +1415,7 @@
         </tr>
       `).join('') || `<tr><td colspan="3" style="text-align:center;color:var(--text-muted);padding:2rem;font-size:0.82rem">No high-risk IPs detected</td></tr>`;
 
-      loadEvents().then(events => {
-        if (events && _map) {
-          console.log(`Plotting ${events.length} historical events on map`);
-          // Plot last 50 events that have geo data
-          events.filter(e => e.lat && e.lon).slice(0, 50).forEach(e => {
-            plotAttack(e.lat, e.lon, _serverCoords.lat, _serverCoords.lon, '#2878e0', false);
-          });
-        }
-      });
+      loadEvents();
       loadIDSAlerts();
     }
 
@@ -1982,14 +1974,17 @@
       await initMap();
       await refresh();
       
-      // Pre-populate SSE feed with recent activity
+      // Pre-populate SSE feed and map with recent activity
       try {
-        const events = await fetchAPI('/api/search?limit=10');
+        const events = await fetchAPI('/api/search?limit=50');
         events.results.reverse().forEach(o => {
           const row = document.createElement('div');
           row.className = 'sse-row';
           row.innerHTML = `<span class="ip" style="color:var(--link-color)">${esc(o.ip)}</span> → ${esc(o.service)} (${esc(o.country) || 'Unknown'}) ${scoreBadge(o.abuse_score)}`;
           sseFeed.prepend(row);
+          if (o.lat && o.lon) {
+            plotAttack(o.lat, o.lon, _serverCoords.lat, _serverCoords.lon, '#2878e0', false);
+          }
         });
       } catch (e) {}
     })();

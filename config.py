@@ -60,9 +60,31 @@ ALERT_ON_DOWNLOAD = _env_bool("ALERT_ON_DOWNLOAD", True)
 # Discord: min seconds between alerts for the same IP + alert type (invalid → 60)
 DISCORD_ALERT_COOLDOWN = _positive_int("DISCORD_ALERT_COOLDOWN", 60)
 
-# “Victim” coordinates for attack-map arcs (honeypot server location)
-SERVER_LAT = _env_float("SERVER_LAT", 51.5074)
-SERVER_LON = _env_float("SERVER_LON", -0.1278)
+# "Victim" coordinates for attack-map arcs (honeypot server location)
+def _resolve_server_coords():
+    """Return (lat, lon) from env vars if set, else auto-detect via public IP geo-lookup."""
+    lat_env = os.environ.get("SERVER_LAT", "").strip()
+    lon_env = os.environ.get("SERVER_LON", "").strip()
+    if lat_env and lon_env:
+        try:
+            return float(lat_env), float(lon_env)
+        except ValueError:
+            pass
+    try:
+        import urllib.request, json
+        with urllib.request.urlopen("https://ipinfo.io/json", timeout=5) as resp:
+            data = json.loads(resp.read().decode())
+        loc = data.get("loc", "")  # "lat,lon"
+        if loc:
+            lat, lon = map(float, loc.split(","))
+            print(f"[*] Server location auto-detected: {lat}, {lon} (IP: {data.get('ip', '?')})")
+            return lat, lon
+        print(f"[!] ipinfo.io returned no loc field: {data}")
+    except Exception as e:
+        print(f"[!] Server location auto-detect failed: {e}")
+    return 51.5074, -0.1278  # fallback: London
+
+SERVER_LAT, SERVER_LON = _resolve_server_coords()
 
 # Rate limiting
 MAX_CONCURRENT_CONNECTIONS = 200   # global cap across all services
