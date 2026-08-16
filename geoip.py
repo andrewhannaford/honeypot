@@ -6,6 +6,8 @@ import ipaddress
 import threading
 from typing import Any, Dict
 
+from country_centroids import COUNTRY_CENTROIDS
+
 _geo_engine = None
 _geo_lock = threading.Lock()
 
@@ -41,6 +43,13 @@ def lookup(ip: str) -> dict:
     """Return fields for DB/JSONL: country, city, lat, lon (only keys that are set).
 
     Private/reserved addresses, bad input, or lookup errors return {}.
+
+    The bundled geoip2fast database is MaxMind's country-only GeoLite2 data (city-level
+    data isn't freely redistributable, and we deliberately avoid a live third-party geo
+    API here to keep this box from making outbound calls it doesn't need — see
+    ABUSEIPDB_API_KEY). So geoip2fast never actually returns city/lat/lon. When that's
+    the case but we do have a country, fall back to that country's approximate centroid
+    so the attack-map SSE stream (which needs lat/lon) still has something to plot.
     """
     if not ip or not isinstance(ip, str):
         return {}
@@ -83,6 +92,13 @@ def lookup(ip: str) -> dict:
                 out["lon"] = float(lon)
             except (TypeError, ValueError):
                 pass
+
+        if ("lat" not in out or "lon" not in out) and cc:
+            centroid = COUNTRY_CENTROIDS.get(str(cc).upper())
+            if centroid:
+                out.setdefault("lat", centroid[0])
+                out.setdefault("lon", centroid[1])
+
         return out
     except Exception:
         return {}

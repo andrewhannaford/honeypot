@@ -7,7 +7,6 @@ import ratelimit
 from logger import log_event
 from alerts.discord import send_alert
 from config import SMTP_PORT
-from payloads import save_payload
 
 def _handle_client(client_sock, client_addr):
     client_ip = client_addr[0]
@@ -41,15 +40,13 @@ def _handle_client(client_sock, client_addr):
                             subject = bl[8:].strip()
                             break
                     
-                    event = log_event(client_ip, SMTP_PORT, "SMTP", "email_attempt", {
+                    log_event(client_ip, SMTP_PORT, "SMTP", "email_attempt", {
                         "helo": helo,
                         "from": mail_from,
                         "to": rcpt_to,
                         "subject": subject,
                         "body_preview": body[:200]
                     })
-                    save_payload(client_ip, "SMTP", body.encode("utf-8", errors="replace"),
-                                 event_id=event.get("rowid"))
                     client_sock.sendall(b"250 2.0.0 Ok: queued as 12345ABCDE\r\n")
                 else:
                     body_lines.append(line)
@@ -149,6 +146,7 @@ def start_smtp_server():
                 client, addr = sock.accept()
                 if not ratelimit.check_and_acquire(addr[0]):
                     client.close()
+                    log_event(addr[0], SMTP_PORT, "SMTP", "rate_limited")
                     continue
                 threading.Thread(target=_handle_client, args=(client, addr), daemon=True).start()
         except Exception as e:

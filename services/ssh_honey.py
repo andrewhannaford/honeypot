@@ -10,7 +10,6 @@ from logger import log_event
 from alerts.discord import send_alert
 from config import SSH_PORT, SSH_BANNER, SSH_ACCEPT_RATE
 from services.fake_shell import run_shell
-from payloads import save_payload
 
 KEY_PATH = "data/ssh_host_key"
 URL_REGEX = re.compile(r"https?://\S+")
@@ -49,9 +48,8 @@ class _SSHServer(paramiko.ServerInterface):
             if urls:
                 data["urls"] = urls
 
-            event = log_event(self.client_ip, SSH_PORT, "SSH", event_type, data)
+            log_event(self.client_ip, SSH_PORT, "SSH", event_type, data)
             send_alert("SSH", self.client_ip, f"Exec: `{cmd_str}`", alert_type=event_type)
-            save_payload(self.client_ip, "SSH", command, event_id=event.get("rowid"))
 
             channel.send_exit_status(0)
             channel.close()
@@ -174,6 +172,7 @@ def start_ssh_server():
                 client, addr = sock.accept()
                 if not ratelimit.check_and_acquire(addr[0]):
                     client.close()
+                    log_event(addr[0], SSH_PORT, "SSH", "rate_limited")
                     continue
                 threading.Thread(target=_handle_client, args=(client, addr), daemon=True).start()
         except Exception as e:

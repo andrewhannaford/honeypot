@@ -1,10 +1,12 @@
+import json
+import sqlite3
 import sys
 import threading
 import time
-import requests
 from datetime import datetime, timezone
 from config import (
-    DISCORD_WEBHOOK_URL,
+    DB_PATH,
+    ALERT_OUTBOX_MAX,
     ALERT_ON_CONNECT,
     ALERT_ON_CREDENTIAL,
     ALERT_ON_EXEC,
@@ -33,23 +35,46 @@ def _prune_stale_cooldown_entries(now):
 
 
 def _post(payload):
+    """Queue a formatted alert locally instead of calling Discord directly.
+
+    This host is designed to be compromised, so it holds no webhook secret and makes
+    no outbound HTTPS. The forwarder on docker-svc drains `alert_outbox` through the
+    dashboard API and posts to Discord from the trusted side.
+
+    Failures are swallowed and logged: an alert is never worth taking a trap down for.
+    """
     try:
-        r = requests.post(DISCORD_WEBHOOK_URL, json=payload, timeout=5)
-        if not r.ok:
-            print(f"[Discord] Webhook returned {r.status_code}: {r.text[:200]}", file=sys.stderr)
+        conn = sqlite3.connect(DB_PATH, timeout=10)
+        try:
+            conn.execute(
+                "INSERT INTO alert_outbox (created, payload) VALUES (?, ?)",
+                (datetime.now(timezone.utc).isoformat(), json.dumps(payload)),
+            )
+            # Drop oldest first if the forwarder has been down for a long time.
+            conn.execute(
+                "DELETE FROM alert_outbox WHERE id <= "
+                "(SELECT MAX(id) FROM alert_outbox) - ?",
+                (ALERT_OUTBOX_MAX,),
+            )
+            conn.commit()
+        finally:
+            conn.close()
     except Exception as e:
-        print(f"[Discord] Failed to send alert: {e}", file=sys.stderr)
+        print(f"[Discord] Failed to queue alert: {e}", file=sys.stderr)
 
 
 def send_alert(service, ip, message, alert_type="connect"):
-    """Send a Discord alert.
+    """Queue a Discord alert for the trusted-side forwarder to deliver.
 
     alert_type: connect | credential | exec_attempt | download_attempt
     Unknown types are dropped. Cooldown applies per (ip, alert_type).
+
+    Alert *policy* (toggles, cooldown, formatting) stays here; only delivery moved.
+    There is deliberately no webhook-URL check — that secret lives on docker-svc now,
+    and gating on it here would silently suppress every alert.
     """
-    if not DISCORD_WEBHOOK_URL:
-        return
     if alert_type not in _ALLOWED_ALERT_TYPES:
+        print(f"[Discord] Unknown alert_type {alert_type!r} from {service}, dropping alert", file=sys.stderr)
         return
     if alert_type == "credential" and not ALERT_ON_CREDENTIAL:
         return
@@ -72,7 +97,6 @@ def send_alert(service, ip, message, alert_type="connect"):
     color = 0xFF4444 if alert_type == "credential" else 0xFFA500
 
     payload = {
-        "content": "@everyone" if alert_type == "credential" else "",
         "embeds": [
             {
                 "title": f"\U0001f6a8 Honeypot Alert \u2014 {service}",

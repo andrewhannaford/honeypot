@@ -6,9 +6,8 @@ import urllib.parse
 from datetime import datetime, timezone
 import ratelimit
 from logger import log_event
-from payloads import save_payload
 from alerts.discord import send_alert
-from config import HTTP_PORT, HTTP_SERVER_HEADER
+from config import HTTP_PORT, HTTP_SERVER_HEADER, TRUSTED_PROXIES
 
 _FAKE_HTML = b"""<!DOCTYPE html>
 <html lang="en">
@@ -55,6 +54,114 @@ AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE
 AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY
 """
 
+# Bait for the paths that actually get probed here, ranked from Traefik's access log:
+# /sdk (626 hits), /.env (106), /.git/config (90), /.aws/credentials (35),
+# /config.json (33), /actuator/env (27), /.vscode/sftp.json (24).
+#
+# Every credential below is a deliberate canary: AWS's documented EXAMPLE keys, or
+# passwords carrying a marker string. They authenticate nothing — but if one ever shows
+# up in a log or a breach dump, it can only have come from this honeypot.
+_CANARY = "hp7f3a"
+
+_FAKE_GIT_CONFIG = f"""[core]
+\trepositoryformatversion = 0
+\tfilemode = true
+\tbare = false
+\tlogallrefupdates = true
+[remote "origin"]
+\turl = https://deploy-bot:gh0st_{_CANARY}_tok3n@github.com/internal-ops/billing-api.git
+\tfetch = +refs/heads/*:refs/remotes/origin/*
+[branch "main"]
+\tremote = origin
+\tmerge = refs/heads/main
+""".encode()
+
+_FAKE_AWS_CREDENTIALS = f"""[default]
+aws_access_key_id = AKIAIOSFODNN7EXAMPLE
+aws_secret_access_key = wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY
+region = us-east-1
+
+[deploy]
+aws_access_key_id = AKIAI44QH8DHBEXAMPLE
+aws_secret_access_key = je7MtGbClwBF/2Zp9Utk/h3yCo8nvbEXAMPLEKEY
+region = us-west-2
+""".encode()
+
+_FAKE_CONFIG_JSON = f"""{{
+  "environment": "production",
+  "database": {{
+    "host": "10.0.4.19",
+    "port": 5432,
+    "name": "billing",
+    "user": "svc_billing",
+    "password": "Wint3r_{_CANARY}_2024!"
+  }},
+  "redis": {{ "host": "10.0.4.22", "port": 6379, "password": "r3dis_{_CANARY}" }},
+  "jwt_secret": "eyJhbGciOiJIUzI1NiJ9.{_CANARY}.s1gn1ng_k3y",
+  "smtp": {{ "host": "smtp.internal", "user": "noreply@internal", "password": "M@il_{_CANARY}" }}
+}}""".encode()
+
+_FAKE_SFTP_JSON = f"""{{
+  "name": "prod-web",
+  "host": "10.0.4.31",
+  "protocol": "sftp",
+  "port": 22,
+  "username": "deploy",
+  "password": "Depl0y_{_CANARY}_2024",
+  "remotePath": "/var/www/html",
+  "uploadOnSave": true
+}}""".encode()
+
+_FAKE_ACTUATOR_ENV = f"""{{
+  "activeProfiles": ["production"],
+  "propertySources": [
+    {{
+      "name": "systemEnvironment",
+      "properties": {{
+        "SPRING_DATASOURCE_URL": {{ "value": "jdbc:postgresql://10.0.4.19:5432/billing" }},
+        "SPRING_DATASOURCE_USERNAME": {{ "value": "svc_billing" }},
+        "SPRING_DATASOURCE_PASSWORD": {{ "value": "Spr1ng_{_CANARY}_db" }},
+        "JWT_SIGNING_KEY": {{ "value": "{_CANARY}-signing-key-prod" }}
+      }}
+    }}
+  ]
+}}""".encode()
+
+# /sdk is the single most-probed path here — vSphere/ESXi reconnaissance. Answering with
+# a plausible SOAP fault keeps the scanner engaged instead of moving on immediately.
+_FAKE_VSPHERE_SDK = b"""<?xml version="1.0" encoding="UTF-8"?>
+<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/">
+<soapenv:Body>
+<soapenv:Fault>
+<faulttring>Operation not supported: expecting a SOAP request</faulttring>
+<detail><NotSupportedFault xmlns="urn:vim25" xsi:type="NotSupported"/></detail>
+</soapenv:Fault>
+</soapenv:Body>
+</soapenv:Envelope>"""
+
+_FAKE_PHPINFO = b"""<!DOCTYPE html><html><head><title>phpinfo()</title></head>
+<body><h1>PHP Version 7.4.33</h1>
+<table><tr><td>System</td><td>Linux web-prod-01 5.15.0-76-generic x86_64</td></tr>
+<tr><td>Server API</td><td>FPM/FastCGI</td></tr>
+<tr><td>Loaded Configuration File</td><td>/etc/php/7.4/fpm/php.ini</td></tr>
+<tr><td>disable_functions</td><td><i>no value</i></td></tr>
+</table></body></html>"""
+
+# path -> (body, content_type). Keys are lowercase and have any trailing slash stripped,
+# matching how the request path is normalised below.
+_BAIT_PATHS = {
+    "/.git/config": (_FAKE_GIT_CONFIG, "text/plain"),
+    "/.git/head": (b"ref: refs/heads/main\n", "text/plain"),
+    "/.aws/credentials": (_FAKE_AWS_CREDENTIALS, "text/plain"),
+    "/config.json": (_FAKE_CONFIG_JSON, "application/json"),
+    "/api/.env": (_FAKE_ENV, "text/plain"),
+    "/.vscode/sftp.json": (_FAKE_SFTP_JSON, "application/json"),
+    "/actuator/env": (_FAKE_ACTUATOR_ENV, "application/json"),
+    "/sdk": (_FAKE_VSPHERE_SDK, "text/xml"),
+    "/info.php": (_FAKE_PHPINFO, "text/html"),
+    "/phpinfo.php": (_FAKE_PHPINFO, "text/html"),
+}
+
 _MAX_HEADER_BYTES = 16384  # 16 KB ceiling for request headers
 
 
@@ -75,10 +182,16 @@ def _build_response(status="200 OK", body=_FAKE_HTML, content_type="text/html", 
     return header + body
 
 
-def _handle_client(client_sock, client_addr):
+def _handle_client(client_sock, client_addr, port=HTTP_PORT, service="HTTP"):
+    """Shared by the plaintext and TLS listeners — https_honey.py hands us an
+    already-wrapped socket, so everything below is identical either way."""
     client_ip = client_addr[0]
     try:
-        log_event(client_ip, HTTP_PORT, "HTTP", "connect")
+        # Skip the connect log for trusted-proxy peers: the real per-request event that
+        # follows carries the true X-Forwarded-For client, so logging the proxy here would
+        # just pollute the source-IP stats with Traefik's address.
+        if client_ip not in TRUSTED_PROXIES:
+            log_event(client_ip, port, service, "connect")
         client_sock.settimeout(30)
 
         raw = b""
@@ -108,10 +221,31 @@ def _handle_client(client_sock, client_addr):
         for line in lines[1:]:
             if ": " in line:
                 k, v = line.split(": ", 1)
-                headers[k] = v
+                headers[k.lower()] = v
 
         body_pos = raw_str.find("\r\n\r\n")
         body = raw_str[body_pos+4:] if body_pos != -1 else ""
+
+        # If the direct peer is a trusted reverse proxy (Traefik fronting the phantom
+        # hosts), the REAL attacker IP is in X-Forwarded-For — take the left-most entry.
+        # Only trusted when the peer is a known proxy, so a direct attacker cannot spoof
+        # their IP with a forged header.
+        proxy_ip = None
+        if client_ip in TRUSTED_PROXIES:
+            fwd = headers.get("x-forwarded-for") or headers.get("x-real-ip") or ""
+            real = fwd.split(",")[0].strip()
+            if real:
+                proxy_ip, client_ip = client_ip, real
+
+        # Common metadata on every trap event: the Host header tells us WHICH (phantom)
+        # hostname a probe targeted — the key signal once Traefik routes junk subdomains
+        # here — and the User-Agent fingerprints the scanner.
+        meta = {
+            "host": headers.get("host", ""),
+            "user_agent": headers.get("user-agent", ""),
+        }
+        if proxy_ip:
+            meta["via_proxy"] = proxy_ip
 
         # Dispatch traps
         if path == "/wp-login.php":
@@ -120,33 +254,33 @@ def _handle_client(client_sock, client_addr):
                 params = urllib.parse.parse_qs(body)
                 user = params.get("log", [""])[0]
                 pw = params.get("pwd", [""])[0]
-                log_event(client_ip, HTTP_PORT, "HTTP", "credential", {"username": user, "password": pw, "path": path})
-                send_alert("HTTP", client_ip, f"Login (WP): `{user}` / `{pw}`", alert_type="credential")
+                log_event(client_ip, port, service, "credential", {**meta, "username": user, "password": pw, "path": path})
+                send_alert(service, client_ip, f"Login (WP): `{user}` / `{pw}`", alert_type="credential")
                 client_sock.sendall(_build_response(status="200 OK", body=b"Login failed"))
             else:
-                log_event(client_ip, HTTP_PORT, "HTTP", "trap_hit", {"path": path})
+                log_event(client_ip, port, service, "trap_hit", {**meta, "path": path})
                 client_sock.sendall(_build_response(status="200 OK", body=_WP_LOGIN_FORM))
         elif path == "/wp-admin":
-            log_event(client_ip, HTTP_PORT, "HTTP", "trap_hit", {"path": path})
+            log_event(client_ip, port, service, "trap_hit", {**meta, "path": path})
             client_sock.sendall(_build_response(status="301 Moved Permanently", body=b"", location="/wp-login.php"))
         elif path == "/.env":
-            log_event(client_ip, HTTP_PORT, "HTTP", "trap_hit", {"path": path})
+            log_event(client_ip, port, service, "trap_hit", {**meta, "path": path})
             client_sock.sendall(_build_response(status="200 OK", body=_FAKE_ENV, content_type="text/plain"))
+        elif path in _BAIT_PATHS:
+            # Serving a canary file is the highest-signal event here: it means the
+            # attacker asked for a credential store by name, not just crawled the site.
+            payload, ctype = _BAIT_PATHS[path]
+            log_event(client_ip, port, service, "trap_hit", {**meta, "path": path})
+            send_alert(service, client_ip, f"Canary served: `{path}`", alert_type="exec_attempt")
+            client_sock.sendall(_build_response(status="200 OK", body=payload, content_type=ctype))
         else:
             # Default response
-            event = log_event(client_ip, HTTP_PORT, "HTTP", "request", {
+            log_event(client_ip, port, service, "request", {
+                **meta,
                 "method": method,
                 "path": full_path,
-                "user_agent": headers.get("User-Agent", ""),
-                "host": headers.get("Host", ""),
                 "body": body[:512],
             })
-            
-            # Capture POST body as payload
-            if method.upper() == "POST" and body:
-                save_payload(client_ip, "HTTP", body.encode(), event_id=event.get("rowid"))
-                send_alert("HTTP", client_ip, f"Captured POST payload from `{full_path}`", alert_type="download_attempt")
-            
             # No alert for standard requests to avoid flooding
             client_sock.sendall(_build_response())
 
@@ -173,6 +307,7 @@ def start_http_server():
                 client, addr = sock.accept()
                 if not ratelimit.check_and_acquire(addr[0]):
                     client.close()
+                    log_event(addr[0], HTTP_PORT, "HTTP", "rate_limited")
                     continue
                 threading.Thread(target=_handle_client, args=(client, addr), daemon=True).start()
         except Exception as e:

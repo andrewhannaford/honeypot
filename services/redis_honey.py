@@ -6,7 +6,6 @@ import ratelimit
 from logger import log_event
 from alerts.discord import send_alert
 from config import REDIS_PORT
-from payloads import save_payload
 
 def _parse_resp(sock):
     """Simple RESP parser (supports inline and arrays)."""
@@ -24,7 +23,7 @@ def _parse_resp(sock):
     if line.startswith(b"*"):
         # Array: *<num_elements>\r\n$<len>\r\n<data>\r\n...
         try:
-            num_elements = min(int(line[1:]), 128)
+            num_elements = int(line[1:])
             elements = []
             for _ in range(num_elements):
                 # Read bulk string header
@@ -95,31 +94,12 @@ def _handle_client(client_sock, client_addr):
             elif cmd in ("COMMAND", "CAPABILITY"):
                 # Modern clients send these on connect
                 client_sock.sendall(b"*0\r\n")
-            elif cmd == "SET":
-                key = parts[1] if len(parts) > 1 else ""
-                value = parts[2] if len(parts) > 2 else ""
-                event = log_event(client_ip, REDIS_PORT, "REDIS", "set_attempt",
-                                  {"key": key, "value": value[:200]})
-                if value:
-                    save_payload(client_ip, "REDIS", value.encode("utf-8", errors="replace"),
-                                 event_id=event.get("rowid"))
-                client_sock.sendall(b"+OK\r\n")
-            elif cmd == "EVAL":
-                script = parts[1] if len(parts) > 1 else ""
-                event = log_event(client_ip, REDIS_PORT, "REDIS", "eval_attempt",
-                                  {"script": script[:200]})
-                if script:
-                    save_payload(client_ip, "REDIS", script.encode("utf-8", errors="replace"),
-                                 event_id=event.get("rowid"))
-                client_sock.sendall(b"$-1\r\n")
             elif cmd == "QUIT":
                 client_sock.sendall(b"+OK\r\n")
                 break
             else:
                 # Log unknown commands as potentially malicious
-                raw_cmd = " ".join(parts)
-                event = log_event(client_ip, REDIS_PORT, "REDIS", "command", {"cmd": raw_cmd})
-                save_payload(client_ip, "REDIS", raw_cmd.encode(), event_id=event.get("rowid"))
+                log_event(client_ip, REDIS_PORT, "REDIS", "command", {"cmd": " ".join(parts)})
                 client_sock.sendall(b"+OK\r\n") # Never return -ERR
                 
     except Exception:
@@ -144,6 +124,7 @@ def start_redis_server():
                 client, addr = sock.accept()
                 if not ratelimit.check_and_acquire(addr[0]):
                     client.close()
+                    log_event(addr[0], REDIS_PORT, "REDIS", "rate_limited")
                     continue
                 threading.Thread(target=_handle_client, args=(client, addr), daemon=True).start()
         except Exception as e:

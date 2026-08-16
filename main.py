@@ -2,22 +2,30 @@ import threading
 import time
 from services.ssh_honey import start_ssh_server
 from services.http_honey import start_http_server
+from services.https_honey import start_https_server
 from services.ftp_honey import start_ftp_server
 from services.telnet_honey import start_telnet_server
 from services.smtp_honey import start_smtp_server
 from services.redis_honey import start_redis_server
+from services.mysql_honey import start_mysql_server
+from services.postgres_honey import start_postgres_server
 from suricata_logger import start_suricata_logger
 from dashboard.app import start_dashboard
 from logger import init_db, register_event_callback
 from threat_intel import enrich_event
+import ratelimit
+from config import MAX_CONCURRENT_CONNECTIONS, RATE_LIMIT_WINDOW, RATE_LIMIT_MAX_PER_IP
 
 SERVICES = [
     ("SSH", start_ssh_server),
     ("HTTP", start_http_server),
+    ("HTTPS", start_https_server),
     ("FTP", start_ftp_server),
     ("TELNET", start_telnet_server),
     ("SMTP", start_smtp_server),
     ("REDIS", start_redis_server),
+    ("MYSQL", start_mysql_server),
+    ("POSTGRES", start_postgres_server),
     ("SuricataLogger", start_suricata_logger),
     ("Dashboard", start_dashboard),
 ]
@@ -25,10 +33,11 @@ SERVICES = [
 def main():
     print("--- Starting Honeypot ---")
     init_db()
-    
+    ratelimit.configure(MAX_CONCURRENT_CONNECTIONS, RATE_LIMIT_WINDOW, RATE_LIMIT_MAX_PER_IP)
+
     # Register Threat Intel callback
     register_event_callback(enrich_event)
-    
+
     threads = []
     for name, func in SERVICES:
         t = threading.Thread(target=func, name=name, daemon=True)

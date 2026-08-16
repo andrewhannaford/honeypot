@@ -8,5 +8,5 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 RUN mkdir -p logs data
 # EXPOSE all service ports
-EXPOSE 22 21 23 25 80 6379 8080
+EXPOSE 22 21 23 25 80 443 3306 5432 6379 8080 8443
 CMD ["python", "main.py"]

@@ -137,6 +137,7 @@ def start_telnet_server():
                 client, addr = sock.accept()
                 if not ratelimit.check_and_acquire(addr[0]):
                     client.close()
+                    log_event(addr[0], TELNET_PORT, "TELNET", "rate_limited")
                     continue
                 threading.Thread(target=_handle_client, args=(client, addr), daemon=True).start()
         except Exception as e:
