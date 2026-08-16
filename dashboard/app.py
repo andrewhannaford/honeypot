@@ -44,7 +44,11 @@ def publish_attack_event(event_dict):
         "service": event_dict.get("service"),
         "country": event_dict.get("country"),
         "ip": event_dict.get("ip"),
-        "abuse_score": event_dict.get("abuse_score", 0)
+        # risk_score (see risk_score.py), not abuse_score: it's computed synchronously
+        # at insert time, so it's actually populated here. abuse_score comes from an
+        # async AbuseIPDB lookup that hasn't necessarily returned yet when this event
+        # is published — it would always read as 0 on live events even once enriched.
+        "risk_score": event_dict.get("risk_score", 0)
     }
     line = json.dumps(payload, separators=(",", ":")) + "\n"
     with _client_lock:
@@ -448,7 +452,7 @@ def export_events_csv():
     try:
         rows = conn.execute(
             "SELECT id, timestamp, ip, port, service, event_type, data, "
-            "country, city, lat, lon, abuse_score FROM events ORDER BY timestamp DESC"
+            "country, city, lat, lon, abuse_score, risk_score FROM events ORDER BY timestamp DESC"
         ).fetchall()
         buf = io.StringIO()
         if rows:
@@ -476,12 +480,17 @@ def get_stats():
         ).fetchall()
 
         top_ips = conn.execute(
-            "SELECT ip, COUNT(*) as count, MAX(abuse_score) as max_score FROM events GROUP BY ip ORDER BY count DESC LIMIT 10"
+            "SELECT ip, COUNT(*) as count, MAX(risk_score) as max_score FROM events GROUP BY ip ORDER BY count DESC LIMIT 10"
         ).fetchall()
 
-        # High-risk IPs (Top Abuse Scores)
+        # High-risk IPs, ranked by the local composite risk_score (severity + volume +
+        # diversity + AbuseIPDB reputation — see risk_score.py), not raw abuse_score
+        # alone: that only covers a couple of event types and misses IPs AbuseIPDB
+        # simply hasn't seen yet. Raw abuse_score is still surfaced alongside it.
         high_risk = conn.execute(
-            "SELECT ip, MAX(abuse_score) as score, COUNT(*) as count FROM events WHERE abuse_score > 0 GROUP BY ip ORDER BY score DESC LIMIT 10"
+            "SELECT ip, MAX(risk_score) as score, MAX(abuse_score) as abuse_score, "
+            "COUNT(*) as count FROM events WHERE risk_score > 0 "
+            "GROUP BY ip ORDER BY score DESC LIMIT 10"
         ).fetchall()
 
         credential_count = conn.execute(

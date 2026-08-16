@@ -991,7 +991,7 @@
           <div class="panel-header">Threat Intelligence — High Risk IPs</div>
           <div class="table-container" style="padding:0">
             <table>
-              <thead><tr><th>IP Address</th><th>Abuse Score</th><th>Hits</th></tr></thead>
+              <thead><tr><th>IP Address</th><th>Risk Score</th><th>Reputation</th><th>Hits</th></tr></thead>
               <tbody id="high-risk-ips"></tbody>
             </table>
           </div>
@@ -1416,6 +1416,7 @@
         <tr>
           <td><span class="ip">${esc(r.ip)}</span></td>
           <td>${scoreBadge(r.score)}</td>
+          <td>${scoreBadge(r.abuse_score)}</td>
           <td class="mono" style="font-size:0.8rem">${r.count.toLocaleString()}</td>
         </tr>
       `).join('') || `<tr><td colspan="3" style="text-align:center;color:var(--text-muted);padding:2rem;font-size:0.82rem">No high-risk IPs detected</td></tr>`;
@@ -1609,7 +1610,7 @@
           <td>${svcBadge(e.service)}</td>
           <td>${evtBadge(e.event_type)}</td>
           <td class="mono" style="max-width:240px;overflow:hidden;text-overflow:ellipsis;font-size:0.77rem;white-space:nowrap;color:var(--text)">${preview}</td>
-          <td>${scoreBadge(e.abuse_score)}</td>
+          <td>${scoreBadge(e.risk_score)}</td>
         </tr>`;
       }).join('') || `<tr><td colspan="7" style="text-align:center;color:var(--text-muted);padding:2.5rem;font-size:0.82rem">No events matched your query</td></tr>`;
 
@@ -1888,9 +1889,11 @@
       _attackLayers.addTo(_map);
     }
 
-    // Risk color: driven by abuse_score now that AbuseIPDB enrichment is live, so the
-    // map carries real information (a bright red trail is a known-bad IP, not just
-    // decoration) instead of every arc being the same flat blue.
+    // Risk color: driven by risk_score (see risk_score.py) — a local composite of
+    // event severity, this IP's activity volume/diversity, and AbuseIPDB reputation
+    // if known — so the map carries real information (a bright red trail is an IP
+    // the honeypot itself has assessed as dangerous, not just decoration) instead of
+    // every arc being the same flat blue.
     function _riskColor(score) {
       if (score >= 75) return getComputedStyle(document.documentElement).getPropertyValue('--danger').trim() || '#dc4c4c';
       if (score >= 25) return getComputedStyle(document.documentElement).getPropertyValue('--warning').trim() || '#d69730';
@@ -2020,10 +2023,10 @@
         events.results.reverse().forEach(o => {
           const row = document.createElement('div');
           row.className = 'sse-row';
-          row.innerHTML = `<span class="ip" style="color:var(--link-color)">${esc(o.ip)}</span> → ${esc(o.service)} (${esc(o.country) || 'Unknown'}) ${scoreBadge(o.abuse_score)}`;
+          row.innerHTML = `<span class="ip" style="color:var(--link-color)">${esc(o.ip)}</span> → ${esc(o.service)} (${esc(o.country) || 'Unknown'}) ${scoreBadge(o.risk_score)}`;
           sseFeed.prepend(row);
           if (o.lat && o.lon) {
-            plotAttack(o.lat, o.lon, _serverCoords.lat, _serverCoords.lon, o.abuse_score || 0, false);
+            plotAttack(o.lat, o.lon, _serverCoords.lat, _serverCoords.lon, o.risk_score || 0, false);
           }
         });
       } catch (e) {}
@@ -2038,12 +2041,12 @@
       
       // Plot on map
       if (o.src_lat && o.src_lon) {
-        plotAttack(o.src_lat, o.src_lon, o.dst_lat || _serverCoords.lat, o.dst_lon || _serverCoords.lon, o.abuse_score || 0);
+        plotAttack(o.src_lat, o.src_lon, o.dst_lat || _serverCoords.lat, o.dst_lon || _serverCoords.lon, o.risk_score || 0);
       }
 
       const row = document.createElement('div');
       row.className = 'sse-row';
-      row.innerHTML = `<span class="ip" style="color:var(--link-color)">${esc(o.ip)}</span> → ${esc(o.service)} (${esc(o.country) || 'Unknown'}) ${scoreBadge(o.abuse_score)}`;
+      row.innerHTML = `<span class="ip" style="color:var(--link-color)">${esc(o.ip)}</span> → ${esc(o.service)} (${esc(o.country) || 'Unknown'}) ${scoreBadge(o.risk_score)}`;
       sseFeed.prepend(row);
       if (sseFeed.children.length > 50) sseFeed.removeChild(sseFeed.lastChild);
     };

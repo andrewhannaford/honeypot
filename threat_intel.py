@@ -4,6 +4,7 @@ import sqlite3
 import requests
 from concurrent.futures import ThreadPoolExecutor
 from config import DB_PATH, ABUSEIPDB_API_KEY
+import risk_score
 
 # Cache: ip -> (score, timestamp)
 _cache = {}
@@ -14,12 +15,23 @@ _CACHE_TTL = 86400  # 24 hours
 _executor = ThreadPoolExecutor(max_workers=4)
 
 def _update_db(rowid, score):
-    """Updates the abuse_score column for a specific event row."""
+    """Updates abuse_score for a specific event row, then recomputes risk_score now
+    that the AbuseIPDB component of it is actually known (it was 0/unscored on that
+    axis at insert time, since this lookup is async and only fires for a subset of
+    event types — see enrich_event())."""
     try:
         conn = sqlite3.connect(DB_PATH)
-        with conn:
-            conn.execute("UPDATE events SET abuse_score = ? WHERE id = ?", (score, rowid))
-        conn.close()
+        try:
+            with conn:
+                conn.execute("UPDATE events SET abuse_score = ? WHERE id = ?", (score, rowid))
+            row = conn.execute(
+                "SELECT ip, event_type FROM events WHERE id = ?", (rowid,)
+            ).fetchone()
+            if row:
+                risk_score.score_and_store(rowid, row[0], row[1], conn=conn)
+                conn.commit()
+        finally:
+            conn.close()
     except Exception as e:
         print(f"[ThreatIntel] DB update failed: {e}")
 
@@ -65,8 +77,12 @@ def enrich_event(event_dict):
     if not ABUSEIPDB_API_KEY:
         return
 
-    # Only enrich high-signal events to save quota
-    if event_dict["event_type"] not in ("credential", "download_attempt"):
+    # Only enrich high-signal events to save quota. Widened from just
+    # credential/download_attempt: exec_attempt/eval_attempt/set_attempt are active
+    # code-execution attempts and arguably more severe than either of those.
+    if event_dict["event_type"] not in (
+        "credential", "download_attempt", "exec_attempt", "eval_attempt", "set_attempt",
+    ):
         return
 
     rowid = event_dict.get("rowid")

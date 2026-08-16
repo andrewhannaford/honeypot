@@ -6,6 +6,7 @@ import threading
 from datetime import datetime, timezone
 from config import LOG_DIR, DATA_DIR, DB_PATH
 from geoip import lookup as geo_lookup
+import risk_score
 
 _log = logging.getLogger(__name__)
 
@@ -57,6 +58,7 @@ def init_db():
     _add_column_if_missing(conn, "events", "lat", "REAL")
     _add_column_if_missing(conn, "events", "lon", "REAL")
     _add_column_if_missing(conn, "events", "abuse_score", "INTEGER")
+    _add_column_if_missing(conn, "events", "risk_score", "INTEGER")
     conn.execute("""
         CREATE TABLE IF NOT EXISTS suricata_alerts (
             id        INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -148,6 +150,12 @@ def log_event(ip, port, service, event_type, data=None):
     finally:
         conn.close()
 
+    # Local, no-API-call composite score (event severity + this IP's activity volume/
+    # diversity against this honeypot + AbuseIPDB reputation if known yet) — computed
+    # for every event, unlike abuse_score which only covers a couple of event types
+    # and needs a network round-trip. See risk_score.py.
+    risk = risk_score.score_and_store(rowid, ip, event_type)
+
     event_dict = {
         "rowid": rowid,
         "timestamp": timestamp,
@@ -160,6 +168,7 @@ def log_event(ip, port, service, event_type, data=None):
         "city": city,
         "lat": lat,
         "lon": lon,
+        "risk_score": risk,
     }
 
     line = json.dumps(event_dict, default=str) + "\n"
