@@ -6,6 +6,7 @@ import traceback
 import ratelimit
 from logger import log_event
 from alerts.discord import send_alert
+from payloads import save_payload
 from config import SMTP_PORT
 
 def _handle_client(client_sock, client_addr):
@@ -40,13 +41,15 @@ def _handle_client(client_sock, client_addr):
                             subject = bl[8:].strip()
                             break
                     
-                    log_event(client_ip, SMTP_PORT, "SMTP", "email_attempt", {
+                    event = log_event(client_ip, SMTP_PORT, "SMTP", "email_attempt", {
                         "helo": helo,
                         "from": mail_from,
                         "to": rcpt_to,
                         "subject": subject,
                         "body_preview": body[:200]
                     })
+                    save_payload(client_ip, "SMTP", body.encode("utf-8", errors="replace"),
+                                 event_id=event.get("rowid"))
                     client_sock.sendall(b"250 2.0.0 Ok: queued as 12345ABCDE\r\n")
                 else:
                     body_lines.append(line)

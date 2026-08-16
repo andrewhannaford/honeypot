@@ -4,6 +4,7 @@ import json
 import re
 from logger import log_event
 from alerts.discord import send_alert
+from payloads import save_payload
 
 # Max concurrent shell sessions across all services
 _session_cap = threading.Semaphore(20)
@@ -95,7 +96,8 @@ def run_shell(send_fn, recv_line_fn, ip, port, service, username):
                     pass # cat with no args just hangs in real bash, we ignore
             elif cmd in ("wget", "curl"):
                 urls = URL_REGEX.findall(line)
-                log_event(ip, port, service, "download_attempt", {"command": line, "urls": urls})
+                event = log_event(ip, port, service, "download_attempt", {"command": line, "urls": urls})
+                save_payload(ip, service, line.encode("utf-8", errors="replace"), event_id=event.get("rowid"))
                 send_alert(service, ip, f"Download attempt in shell: `{line}`", alert_type="download_attempt")
                 time.sleep(1)
                 send_fn(f"{cmd}: connecting to {urls[0] if urls else 'remote host'}... failed: Connection refused.\r\n")

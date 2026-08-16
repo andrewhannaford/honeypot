@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 import ratelimit
 from logger import log_event
 from alerts.discord import send_alert
+from payloads import save_payload
 from config import HTTP_PORT, HTTP_SERVER_HEADER, TRUSTED_PROXIES
 
 _FAKE_HTML = b"""<!DOCTYPE html>
@@ -275,12 +276,15 @@ def _handle_client(client_sock, client_addr, port=HTTP_PORT, service="HTTP"):
             client_sock.sendall(_build_response(status="200 OK", body=payload, content_type=ctype))
         else:
             # Default response
-            log_event(client_ip, port, service, "request", {
+            event = log_event(client_ip, port, service, "request", {
                 **meta,
                 "method": method,
                 "path": full_path,
                 "body": body[:512],
             })
+            if body:
+                save_payload(client_ip, service, body.encode("utf-8", errors="replace"),
+                             event_id=event.get("rowid"))
             # No alert for standard requests to avoid flooding
             client_sock.sendall(_build_response())
 
