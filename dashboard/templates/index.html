@@ -867,14 +867,6 @@
         Detections
       </div>
 
-      <div class="nav-section">System</div>
-
-      <div class="nav-item" onclick="showTab('settings')" role="button" tabindex="0">
-        <svg class="nav-icon" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
-          <path fill-rule="evenodd" d="M11.49 3.17c-.38-1.56-2.6-1.56-2.98 0a1.532 1.532 0 01-2.286.948c-1.372-.836-2.942.734-2.106 2.106.54.886.061 2.042-.947 2.287-1.561.379-1.561 2.6 0 2.978a1.532 1.532 0 01.947 2.287-1.561.379-1.561 2.6 0 2.978a1.532 1.532 0 01.947 2.287c-.836 1.372.734 2.942 2.106 2.106a1.532 1.532 0 012.287.947c.379 1.561 2.6 1.561 2.978 0a1.533 1.533 0 012.287-.947c1.372.836 2.942-.734 2.106-2.106a1.533 1.533 0 01.947-2.287c1.561-.379 1.561-2.6 0-2.978a1.532 1.532 0 01-.947-2.287c.836-1.372-.734-2.942-2.106-2.106a1.532 1.532 0 01-2.287-.947zM10 13a3 3 0 100-6 3 3 0 000 6z" clip-rule="evenodd"/>
-        </svg>
-        Settings
-      </div>
     </nav>
 
     <div class="sidebar-footer">
@@ -1018,10 +1010,15 @@
           <button class="siem-pill" onclick="siemQuick('event_type:exec_attempt')">Exec</button>
           <button class="siem-pill" onclick="siemQuick('event_type:trap_hit')">Trap Hits</button>
           <button class="siem-pill" onclick="siemQuick('event_type:command')">Commands</button>
+          <button class="siem-pill" onclick="siemQuick('event_type:pubkey_attempt')">Pubkey</button>
+          <button class="siem-pill" onclick="siemQuick('event_type:rate_limited')">Rate Limited</button>
           <button class="siem-pill" onclick="siemQuick('service:SSH')">SSH</button>
           <button class="siem-pill" onclick="siemQuick('service:HTTP')">HTTP</button>
+          <button class="siem-pill" onclick="siemQuick('service:HTTPS')">HTTPS</button>
           <button class="siem-pill" onclick="siemQuick('service:REDIS')">Redis</button>
           <button class="siem-pill" onclick="siemQuick('service:SMTP')">SMTP</button>
+          <button class="siem-pill" onclick="siemQuick('service:MYSQL')">MySQL</button>
+          <button class="siem-pill" onclick="siemQuick('service:POSTGRES')">Postgres</button>
         </div>
       </div>
 
@@ -1059,7 +1056,9 @@
           <select id="payload-filter-svc" onchange="loadPayloads()" aria-label="Filter by Service">
             <option value="">All Services</option>
             <option value="SSH">SSH</option>
+            <option value="TELNET">TELNET</option>
             <option value="HTTP">HTTP</option>
+            <option value="HTTPS">HTTPS</option>
             <option value="SMTP">SMTP</option>
             <option value="REDIS">REDIS</option>
           </select>
@@ -1107,8 +1106,9 @@
               <label>Service <span style="color:var(--danger)">*</span></label>
               <input type="text" id="cd-service" list="cd-service-list" placeholder="e.g. SSH" autocomplete="off">
               <datalist id="cd-service-list">
-                <option value="SSH"><option value="HTTP"><option value="FTP">
+                <option value="SSH"><option value="HTTP"><option value="HTTPS"><option value="FTP">
                 <option value="TELNET"><option value="SMTP"><option value="REDIS">
+                <option value="MYSQL"><option value="POSTGRES">
               </datalist>
             </div>
             <div class="form-group" style="margin-bottom:0">
@@ -1132,7 +1132,7 @@
               <option value="credential"><option value="command"><option value="download_attempt">
               <option value="exec_attempt"><option value="trap_hit"><option value="connect">
               <option value="email_attempt"><option value="set_attempt"><option value="eval_attempt">
-              <option value="request">
+              <option value="request"><option value="pubkey_attempt"><option value="rate_limited">
             </datalist>
           </div>
           <div class="form-group" style="margin-bottom:0.25rem">
@@ -1237,47 +1237,6 @@
     </div>
 
     <!-- Settings Tab -->
-    <div id="tab-settings" class="tab-content">
-      <div class="panel" style="max-width:560px">
-        <div class="panel-header">Configuration</div>
-        <div class="panel-body">
-          <div class="form-group">
-            <label for="cfg-discord">Discord Webhook URL</label>
-            <input type="password" id="cfg-discord" placeholder="https://discord.com/api/webhooks/…">
-          </div>
-          <div class="form-group">
-            <label for="cfg-abuseipdb">AbuseIPDB API Key</label>
-            <input type="password" id="cfg-abuseipdb" placeholder="Your API Key">
-          </div>
-          <div class="form-group">
-            <label for="cfg-gemini">Gemini API Key <span style="color:var(--text-muted);font-weight:400">(LLM Shell)</span></label>
-            <input type="password" id="cfg-gemini" placeholder="Your Gemini API Key">
-          </div>
-          <div class="form-group">
-            <label for="cfg-vt">VirusTotal API Key <span style="color:var(--text-muted);font-weight:400">(Payload Analysis)</span></label>
-            <input type="password" id="cfg-vt" placeholder="Your VirusTotal API Key">
-          </div>
-          <div class="form-group">
-            <label>Alert Toggles</label>
-            <div class="toggle-group">
-              <input type="checkbox" id="cfg-on-connect">
-              <label for="cfg-on-connect">Alert on New Connections</label>
-            </div>
-            <div class="toggle-group">
-              <input type="checkbox" id="cfg-on-creds">
-              <label for="cfg-on-creds">Alert on Captured Credentials</label>
-            </div>
-            <div class="toggle-group">
-              <input type="checkbox" id="cfg-on-exec">
-              <label for="cfg-on-exec">Alert on Exec Attempts</label>
-            </div>
-          </div>
-          <button class="btn btn-primary" onclick="saveSettings()">Save Settings</button>
-          <p id="settings-msg" style="margin-top:0.875rem;font-size:0.79rem"></p>
-        </div>
-      </div>
-    </div>
-
   </main>
 
   <script>
@@ -1318,12 +1277,15 @@
 
     /* ── Service & event badge helpers ─────────────────────── */
     const SVC_COLORS = {
-      SSH:    { bg: 'rgba(139,92,246,0.15)', fg: '#a78bfa', border: 'rgba(139,92,246,0.28)' },
-      HTTP:   { bg: 'rgba(6,182,212,0.13)',  fg: '#22d3ee', border: 'rgba(6,182,212,0.26)'  },
-      FTP:    { bg: 'rgba(245,158,11,0.13)', fg: '#fbbf24', border: 'rgba(245,158,11,0.26)' },
-      TELNET: { bg: 'rgba(16,185,129,0.13)', fg: '#34d399', border: 'rgba(16,185,129,0.26)' },
-      SMTP:   { bg: 'rgba(236,72,153,0.13)', fg: '#f472b6', border: 'rgba(236,72,153,0.26)' },
-      REDIS:  { bg: 'rgba(239,68,68,0.13)',  fg: '#f87171', border: 'rgba(239,68,68,0.26)'  },
+      SSH:      { bg: 'rgba(139,92,246,0.15)', fg: '#a78bfa', border: 'rgba(139,92,246,0.28)' },
+      HTTP:     { bg: 'rgba(6,182,212,0.13)',  fg: '#22d3ee', border: 'rgba(6,182,212,0.26)'  },
+      HTTPS:    { bg: 'rgba(20,184,166,0.13)', fg: '#2dd4bf', border: 'rgba(20,184,166,0.26)' },
+      FTP:      { bg: 'rgba(245,158,11,0.13)', fg: '#fbbf24', border: 'rgba(245,158,11,0.26)' },
+      TELNET:   { bg: 'rgba(16,185,129,0.13)', fg: '#34d399', border: 'rgba(16,185,129,0.26)' },
+      SMTP:     { bg: 'rgba(236,72,153,0.13)', fg: '#f472b6', border: 'rgba(236,72,153,0.26)' },
+      REDIS:    { bg: 'rgba(239,68,68,0.13)',  fg: '#f87171', border: 'rgba(239,68,68,0.26)'  },
+      MYSQL:    { bg: 'rgba(59,130,246,0.13)', fg: '#60a5fa', border: 'rgba(59,130,246,0.26)' },
+      POSTGRES: { bg: 'rgba(99,102,241,0.13)', fg: '#818cf8', border: 'rgba(99,102,241,0.26)' },
     };
 
     function svcBadge(svc) {
@@ -1343,13 +1305,15 @@
         set_attempt:      { bg:'rgba(220,76,76,0.12)',  fg:'#f87171', border:'rgba(220,76,76,0.22)'  },
         eval_attempt:     { bg:'rgba(249,115,22,0.12)', fg:'#fb923c', border:'rgba(249,115,22,0.22)' },
         request:          { bg:'rgba(28,168,192,0.11)', fg:'#22d3ee', border:'rgba(28,168,192,0.22)' },
+        pubkey_attempt:   { bg:'rgba(220,76,76,0.12)',  fg:'#f87171', border:'rgba(220,76,76,0.22)'  },
+        rate_limited:     { bg:'rgba(110,118,129,0.12)',fg:'#8b949e', border:'rgba(110,118,129,0.22)' },
       };
       const c = map[evt] || { bg:'rgba(40,120,224,0.1)', fg:'#4e96e8', border:'rgba(40,120,224,0.22)' };
       return `<span style="background:${c.bg};color:${c.fg};border:1px solid ${c.border};padding:0.12rem 0.45rem;border-radius:4px;font-size:0.7rem;font-weight:600">${esc(evt)}</span>`;
     }
 
     /* ── Tab navigation ─────────────────────────────────────── */
-    const TAB_TITLES = { overview:'Overview', events:'Events', ids:'IDS Alerts', payloads:'Payloads', detections:'Detections', settings:'Settings' };
+    const TAB_TITLES = { overview:'Overview', events:'Events', ids:'IDS Alerts', payloads:'Payloads', detections:'Detections' };
 
     function showTab(tabId) {
       document.querySelectorAll('.tab-content').forEach(el => el.classList.remove('active'));
@@ -1376,7 +1340,6 @@
         if (_map) setTimeout(() => _map.invalidateSize(), 100);
       }
       else if (tabId === 'events') loadEvents(true);
-      else if (tabId === 'settings') loadSettings();
       else if (tabId === 'payloads') loadPayloads();
       else if (tabId === 'detections') loadDetections();
 
@@ -1744,7 +1707,7 @@
     }
 
     /* ── Create / delete custom detections ──────────────────── */
-    const _SVC_PORTS = { SSH:22, HTTP:80, FTP:21, TELNET:23, SMTP:25, REDIS:6379 };
+    const _SVC_PORTS = { SSH:22, HTTP:80, HTTPS:8443, FTP:21, TELNET:23, SMTP:25, REDIS:6379, MYSQL:3306, POSTGRES:5432 };
 
     function openCreateDet() {
       ['cd-service','cd-label','cd-desc','cd-etype','cd-mitre-id','cd-mitre-tech','cd-mitre-tactic','cd-mitre-url','cd-query'].forEach(id => {
@@ -1853,56 +1816,16 @@
       } catch { /* toast shown by fetchAPI */ }
     }
 
-    /* ── Settings ───────────────────────────────────────────── */
-    async function loadSettings() {
-      const cfg = await fetchAPI('/api/config');
-      document.getElementById('cfg-discord').value = cfg.discord_webhook_url;
-      document.getElementById('cfg-abuseipdb').value = cfg.abuseipdb_api_key;
-      document.getElementById('cfg-gemini').value = cfg.gemini_api_key || '';
-      document.getElementById('cfg-vt').value = cfg.virustotal_api_key || '';
-      document.getElementById('cfg-on-connect').checked = cfg.alerts.on_connect;
-      document.getElementById('cfg-on-creds').checked = cfg.alerts.on_credential;
-      document.getElementById('cfg-on-exec').checked = cfg.alerts.on_exec;
-    }
-
-    async function saveSettings() {
-      const data = {
-        discord_webhook_url: document.getElementById('cfg-discord').value,
-        abuseipdb_api_key:   document.getElementById('cfg-abuseipdb').value,
-        gemini_api_key:      document.getElementById('cfg-gemini').value,
-        virustotal_api_key:  document.getElementById('cfg-vt').value,
-        alerts: {
-          on_connect:    document.getElementById('cfg-on-connect').checked,
-          on_credential: document.getElementById('cfg-on-creds').checked,
-          on_exec:       document.getElementById('cfg-on-exec').checked,
-        }
-      };
-      const result = await fetchAPI('/api/config', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(data)
-      });
-      document.getElementById('settings-msg').textContent = result.message;
-      document.getElementById('settings-msg').style.color = result.status === 'success' ? 'var(--success)' : 'var(--danger)';
-    }
-
     /* ── Attack Map Logic ────────────────────────────────── */
     let _map, _serverMarker;
-    let _serverCoords = { lat: 51.5074, lon: -0.1278 };
+    // Rendered server-side (dashboard/app.py passes config.SERVER_LAT/LON into the
+    // template) rather than fetched, so the dashboard needs no config-reading API
+    // route at all — nothing here can leak or accept writes to secrets.
+    let _serverCoords = { lat: {{ server_lat }}, lon: {{ server_lon }} };
     const _attackLayers = L.layerGroup();
 
     async function initMap() {
       if (_map) return;
-
-      // Load actual server coords first
-      try {
-        const cfg = await fetchAPI('/api/config');
-        if (cfg.server_location) {
-          _serverCoords = cfg.server_location;
-        }
-      } catch (e) {
-        console.warn("Could not load server location, using defaults.");
-      }
 
       _map = L.map('attack-map', {
         center: [20, 0],

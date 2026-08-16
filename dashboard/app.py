@@ -405,7 +405,9 @@ def search_logs():
 
 @app.route("/")
 def index():
-    return render_template("index.html")
+    return render_template(
+        "index.html", server_lat=config.SERVER_LAT, server_lon=config.SERVER_LON
+    )
 
 
 @app.route("/api/events")
