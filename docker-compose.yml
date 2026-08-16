@@ -44,8 +44,11 @@ services:
     command: --af-packet=${SURICATA_IFACE:-ens33}
     volumes:
       - ./logs/suricata:/var/log/suricata
-      - ./suricata.yaml:/etc/suricata/suricata.yaml:ro
-      - ./suricata.rules:/var/lib/suricata/rules/suricata.rules:ro
+      # NOT :ro — jasonish/suricata's entrypoint chowns suricata.yaml on startup
+      # and crash-loops if it can't (confirmed: "Read-only file system", container
+      # stuck in Restarting).
+      - ./suricata.yaml:/etc/suricata/suricata.yaml
+      - ./suricata.rules:/var/lib/suricata/rules/suricata.rules
     restart: unless-stopped
 
 volumes:
