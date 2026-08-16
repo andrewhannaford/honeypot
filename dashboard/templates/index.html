@@ -689,20 +689,62 @@
 
     /* ── Attack Map ──────────────────────────────────────── */
     #attack-map {
-      height: 400px;
+      height: 440px;
       width: 100%;
-      background: var(--bg);
+      background: #060a12;
       border-bottom: 1px solid var(--border);
       z-index: 1;
     }
-    .leaflet-container { background: var(--bg) !important; }
+    .leaflet-container { background: #060a12 !important; }
     .leaflet-vignette {
       position: absolute; inset: 0;
-      box-shadow: inset 0 0 100px rgba(0,0,0,0.5);
+      box-shadow: inset 0 0 140px rgba(0,0,0,0.75);
       pointer-events: none; z-index: 400;
     }
-    /* Dark map tiles via CSS filter */
-    .leaflet-tile-layer { filter: invert(100%) hue-rotate(180deg) brightness(95%) contrast(90%) grayscale(100%); opacity: 0.2; }
+    /* Real dark basemap (CartoDB Dark Matter, no key required) — no CSS filter hack. */
+    .leaflet-tile-layer { opacity: 0.85; }
+
+    /* Attacker "radar ping": solid glowing core + one expanding, fading ring. Pure CSS
+       animation (GPU-composited transform/opacity) so bursts of events don't hammer the
+       main thread the way a setInterval-driven fade loop would. */
+    .attack-ping { position: relative; width: 16px; height: 16px; pointer-events: none; }
+    .attack-ping .ping-core {
+      position: absolute; inset: 5px; border-radius: 50%;
+      background: var(--c, var(--accent));
+      box-shadow: 0 0 5px var(--c, var(--accent)), 0 0 10px var(--c, var(--accent));
+    }
+    .attack-ping .ping-ring {
+      position: absolute; inset: 0; border-radius: 50%;
+      border: 2px solid var(--c, var(--accent));
+      animation: ping-expand 1.7s cubic-bezier(0.2, 0.6, 0.4, 1) forwards;
+    }
+    @keyframes ping-expand {
+      0%   { transform: scale(0.4); opacity: 0.9; }
+      100% { transform: scale(3.2); opacity: 0; }
+    }
+
+    /* Honeypot's own "beacon" — a continuously pulsing double ring around a solid core,
+       so it reads unmistakably as "home base" next to the one-shot attacker pings. */
+    .server-beacon { position: relative; width: 22px; height: 22px; pointer-events: none; }
+    .server-beacon .beacon-core {
+      position: absolute; inset: 7px; border-radius: 50%;
+      background: #fff;
+      box-shadow: 0 0 6px var(--accent-light), 0 0 14px var(--accent);
+    }
+    .server-beacon .beacon-ring {
+      position: absolute; inset: 0; border-radius: 50%;
+      border: 2px solid var(--accent-light);
+      animation: beacon-pulse 2.6s ease-out infinite;
+    }
+    .server-beacon .beacon-ring.delay { animation-delay: 1.3s; }
+    @keyframes beacon-pulse {
+      0%   { transform: scale(0.5); opacity: 0.85; }
+      100% { transform: scale(2.2); opacity: 0; }
+    }
+
+    /* Arc glow — color set inline per-attack (risk-based); drop-shadow gives the line a
+       neon trail without needing extra stacked polylines per event. */
+    .attack-arc { filter: drop-shadow(0 0 3px var(--arc-c)) drop-shadow(0 0 7px var(--arc-c)); }
 
     /* ── Payload Modal Box ──────────────────────────────── */
     .payload-modal-box {
@@ -1837,58 +1879,133 @@
         worldCopyJump: true
       });
 
-      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(_map);
+      // CartoDB Dark Matter — an actual dark basemap (no API key), not a light map
+      // pushed through a CSS invert filter.
+      L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+        subdomains: 'abcd',
+        maxZoom: 19,
+      }).addTo(_map);
       _attackLayers.addTo(_map);
     }
 
-    function plotAttack(srcLat, srcLon, dstLat, dstLon, color = '#2878e0', isLive = true) {
-      if (!_map || isNaN(srcLat) || isNaN(srcLon)) return;
+    // Risk color: driven by abuse_score now that AbuseIPDB enrichment is live, so the
+    // map carries real information (a bright red trail is a known-bad IP, not just
+    // decoration) instead of every arc being the same flat blue.
+    function _riskColor(score) {
+      if (score >= 75) return getComputedStyle(document.documentElement).getPropertyValue('--danger').trim() || '#dc4c4c';
+      if (score >= 25) return getComputedStyle(document.documentElement).getPropertyValue('--warning').trim() || '#d69730';
+      return getComputedStyle(document.documentElement).getPropertyValue('--accent-light').trim() || '#4e96f4';
+    }
 
+    // Quadratic-bezier "great circle" arc between two points, so long-haul attacks read
+    // as a curve sweeping across the map instead of a straight ruled line. Handles the
+    // antimeridian by taking the shorter longitude delta.
+    function _arcPoints(srcLat, srcLon, dstLat, dstLon, segments = 48) {
+      let dLon = dstLon - srcLon;
+      if (dLon > 180) dLon -= 360;
+      if (dLon < -180) dLon += 360;
+      const dLat = dstLat - srcLat;
+
+      const midLat = srcLat + dLat / 2;
+      const midLon = srcLon + dLon / 2;
+
+      const dist = Math.sqrt(dLat * dLat + dLon * dLon) || 1;
+      const bulge = Math.min(dist * 0.22, 22);
+      const perpLat = -dLon / dist;
+      const perpLon = dLat / dist;
+      const ctrlLat = midLat + perpLat * bulge;
+      const ctrlLon = midLon + perpLon * bulge;
+
+      const pts = [];
+      for (let i = 0; i <= segments; i++) {
+        const t = i / segments;
+        const it = 1 - t;
+        pts.push([
+          it * it * srcLat + 2 * it * t * ctrlLat + t * t * dstLat,
+          it * it * srcLon + 2 * it * t * ctrlLon + t * t * (srcLon + dLon),
+        ]);
+      }
+      return pts;
+    }
+
+    // Hard cap on simultaneous animated arcs/pings — the SSH scanner traffic this
+    // honeypot sees can burst into hundreds of events/minute, and every arc's SVG path
+    // + drop-shadow filter has a real (if small) cost. Past the cap, newest events still
+    // reach the feed list, just skip the map draw, rather than letting the browser tab
+    // fall behind or jank during a burst.
+    const _MAX_LIVE_ARCS = 40;
+    let _liveArcCount = 0;
+
+    function plotAttack(srcLat, srcLon, dstLat, dstLon, riskScore = 0, isLive = true) {
+      if (!_map || isNaN(srcLat) || isNaN(srcLon)) return;
+      if (isLive && _liveArcCount >= _MAX_LIVE_ARCS) return;
+
+      const color = _riskColor(riskScore || 0);
       const src = [srcLat, srcLon];
       const dst = [dstLat, dstLon];
 
-      // Pulse circle at source
-      const circle = L.circleMarker(src, {
-        radius: isLive ? 4 : 3,
+      // Ensure the server beacon exists before anything else draws on top of it.
+      if (!_serverMarker) {
+        _serverMarker = L.marker(dst, {
+          icon: L.divIcon({
+            className: '',
+            html: '<div class="server-beacon">'
+                + '<span class="beacon-ring"></span>'
+                + '<span class="beacon-ring delay"></span>'
+                + '<span class="beacon-core"></span>'
+                + '</div>',
+            iconSize: [22, 22],
+            iconAnchor: [11, 11],
+          }),
+          interactive: true,
+        }).addTo(_map).bindTooltip('Honeypot Server', { permanent: false });
+      }
+
+      // Curved, glowing arc that draws itself in from source to destination.
+      const line = L.polyline(_arcPoints(srcLat, srcLon, dstLat, dstLon), {
+        className: 'attack-arc',
         color: color,
-        fillColor: color,
-        fillOpacity: isLive ? 0.8 : 0.4,
-        weight: 1
+        weight: isLive ? 1.6 : 1,
+        opacity: isLive ? 0.85 : 0.18,
       }).addTo(_attackLayers);
 
-      // Arc line
-      const line = L.polyline([src, dst], {
-        color: color,
-        weight: 1.5,
-        opacity: isLive ? 0.4 : 0.15,
-        dashArray: isLive ? '4, 6' : '2, 4'
+      // Path layers (unlike Marker) don't reliably expose a public getElement() in
+      // Leaflet 1.9.x — _path is the documented-in-practice way to reach the
+      // underlying SVG <path> for direct style/animation work like this.
+      const pathEl = line._path || (line.getElement && line.getElement());
+      if (pathEl) {
+        pathEl.style.setProperty('--arc-c', color);
+        if (isLive) {
+          const len = pathEl.getTotalLength();
+          pathEl.style.strokeDasharray = len;
+          pathEl.style.strokeDashoffset = len;
+          // Force a reflow so the browser registers the starting state before the
+          // transition below is applied — otherwise it just snaps straight to 0.
+          pathEl.getBoundingClientRect();
+          pathEl.style.transition = 'stroke-dashoffset 0.7s ease-out, opacity 1.6s ease-in 0.9s';
+          pathEl.style.strokeDashoffset = '0';
+        }
+      }
+
+      // Radar-ping marker at the attacker's location.
+      const ping = L.marker(src, {
+        icon: L.divIcon({
+          className: '',
+          html: `<div class="attack-ping" style="--c:${color}"><span class="ping-core"></span><span class="ping-ring"></span></div>`,
+          iconSize: [16, 16],
+          iconAnchor: [8, 8],
+        }),
+        interactive: false,
       }).addTo(_attackLayers);
 
       if (isLive) {
-        // Fade out effect only for live
-        let opacity = 1.0;
-        const fade = setInterval(() => {
-          opacity -= 0.05;
-          if (opacity <= 0) {
-            clearInterval(fade);
-            _attackLayers.removeLayer(circle);
-            _attackLayers.removeLayer(line);
-          } else {
-            circle.setStyle({ opacity: opacity, fillOpacity: opacity * 0.8 });
-            line.setStyle({ opacity: opacity * 0.4 });
-          }
-        }, 150);
-      }
-
-      // Ensure server marker exists
-      if (!_serverMarker) {
-        _serverMarker = L.circleMarker(dst, {
-          radius: 6,
-          color: '#fff',
-          fillColor: '#2878e0',
-          fillOpacity: 1,
-          weight: 2
-        }).addTo(_map).bindTooltip("Honeypot Server", { permanent: false });
+        _liveArcCount++;
+        setTimeout(() => { if (pathEl) pathEl.style.opacity = '0'; }, 900);
+        setTimeout(() => {
+          _attackLayers.removeLayer(line);
+          _attackLayers.removeLayer(ping);
+          _liveArcCount--;
+        }, 2600);
       }
     }
 
@@ -1906,7 +2023,7 @@
           row.innerHTML = `<span class="ip" style="color:var(--link-color)">${esc(o.ip)}</span> → ${esc(o.service)} (${esc(o.country) || 'Unknown'}) ${scoreBadge(o.abuse_score)}`;
           sseFeed.prepend(row);
           if (o.lat && o.lon) {
-            plotAttack(o.lat, o.lon, _serverCoords.lat, _serverCoords.lon, '#2878e0', false);
+            plotAttack(o.lat, o.lon, _serverCoords.lat, _serverCoords.lon, o.abuse_score || 0, false);
           }
         });
       } catch (e) {}
@@ -1921,7 +2038,7 @@
       
       // Plot on map
       if (o.src_lat && o.src_lon) {
-        plotAttack(o.src_lat, o.src_lon, o.dst_lat || _serverCoords.lat, o.dst_lon || _serverCoords.lon);
+        plotAttack(o.src_lat, o.src_lon, o.dst_lat || _serverCoords.lat, o.dst_lon || _serverCoords.lon, o.abuse_score || 0);
       }
 
       const row = document.createElement('div');

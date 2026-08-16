@@ -120,7 +120,7 @@ def _resolve_server_coords():
         print(f"[!] ipinfo.io returned no loc field: {data}")
     except Exception as e:
         print(f"[!] Server location auto-detect failed: {e}")
-    return 51.5074, -0.1278  # fallback: London
+    return 40.7128, -74.0060  # fallback: New York City
 
 SERVER_LAT, SERVER_LON = _resolve_server_coords()
 

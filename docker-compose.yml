@@ -14,8 +14,8 @@ services:
       # Defaulted here (not left blank) so a fresh checkout with no .env doesn't
       # make a live outbound call to ipinfo.io on first boot — see config.py's
       # _resolve_server_coords(). Clear these two if you *want* auto-detection.
-      - SERVER_LAT=${SERVER_LAT:-51.5074}
-      - SERVER_LON=${SERVER_LON:--0.1278}
+      - SERVER_LAT=${SERVER_LAT:-40.7128}
+      - SERVER_LON=${SERVER_LON:--74.0060}
       - SSH_ACCEPT_RATE=${SSH_ACCEPT_RATE:-5}
       - TELNET_ACCEPT_RATE=${TELNET_ACCEPT_RATE:-3}
       - HTTPS_PORT=${HTTPS_PORT:-8443}
