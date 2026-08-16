@@ -544,26 +544,26 @@ class TestDashboard(unittest.TestCase):
         self._orig_db = config.DB_PATH
         config.DB_PATH = self._db
 
-        # Seed the DB
+        # Build the real schema (events + payloads + custom_detections + alert_outbox +
+        # every ALTER-added column) via init_db() rather than a hand-rolled CREATE TABLE,
+        # so this fixture can't drift out of sync with the real schema again — that's
+        # exactly what broke it last time (abuse_score/country/city/lat/lon all added
+        # after this table was first written by hand).
+        from logger import init_db
+
+        with patch("config.DB_PATH", self._db):
+            init_db()
+
         import sqlite3
         conn = sqlite3.connect(self._db)
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("""
-            CREATE TABLE events (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                timestamp TEXT NOT NULL,
-                ip TEXT NOT NULL,
-                port INTEGER NOT NULL,
-                service TEXT NOT NULL,
-                event_type TEXT NOT NULL,
-                data TEXT
-            )
-        """)
         conn.execute(
-            "INSERT INTO events VALUES (NULL,'2024-01-01T00:00:00','1.2.3.4',22,'SSH','credential','{\"username\":\"root\",\"password\":\"pass\"}')"
+            "INSERT INTO events (timestamp, ip, port, service, event_type, data) "
+            "VALUES ('2024-01-01T00:00:00','1.2.3.4',22,'SSH','credential',"
+            "'{\"username\":\"root\",\"password\":\"pass\"}')"
         )
         conn.execute(
-            "INSERT INTO events VALUES (NULL,'2024-01-01T00:00:01','1.2.3.4',80,'HTTP','connect',NULL)"
+            "INSERT INTO events (timestamp, ip, port, service, event_type, data) "
+            "VALUES ('2024-01-01T00:00:01','1.2.3.4',80,'HTTP','connect',NULL)"
         )
         conn.commit()
         conn.close()
