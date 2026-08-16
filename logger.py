@@ -106,6 +106,16 @@ def init_db():
         )
     """)
     _add_column_if_missing(conn, "custom_detections", "query", "TEXT")
+    # Outbound alert queue. A honeypot should make no outbound HTTPS calls of its own
+    # (see config.py); alerts/discord.py parks fully-formatted payloads here instead,
+    # and something on your trusted network drains them via /api/alerts/pending.
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS alert_outbox (
+            id      INTEGER PRIMARY KEY AUTOINCREMENT,
+            created TEXT NOT NULL,
+            payload TEXT NOT NULL
+        )
+    """)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_events_timestamp ON events(timestamp)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_events_ip ON events(ip)")
     conn.execute(

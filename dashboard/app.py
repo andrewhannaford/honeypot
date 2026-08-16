@@ -1,10 +1,10 @@
+import hmac
 import json
 import queue
 import sqlite3
 import threading
 import csv
 import io
-import os
 from datetime import datetime, timedelta, timezone
 from flask import Flask, Response, jsonify, render_template, stream_with_context, request
 import config
@@ -125,6 +125,18 @@ _DETECTION_CONFIG = [
         ],
     },
     {
+        "service": "HTTPS", "port": 8443, "banner": "Apache/2.4.41 (Ubuntu) + TLS",
+        "detections": [
+            {
+                "event_type": "connect", "label": "TLS Connection",
+                "desc": "TLS handshake completed or failed against the HTTPS trap",
+                "mitre_id": "T1190", "mitre_technique": "Exploit Public-Facing Application",
+                "mitre_tactic": "Initial Access",
+                "mitre_url": "https://attack.mitre.org/techniques/T1190/",
+            },
+        ],
+    },
+    {
         "service": "FTP", "port": 21, "banner": "vsFTPd 3.0.5",
         "detections": [
             {
@@ -192,25 +204,35 @@ _DETECTION_CONFIG = [
                 "mitre_url": "https://attack.mitre.org/techniques/T1110/",
             },
             {
-                "event_type": "set_attempt", "label": "SET Payload",
-                "desc": "Value written via SET saved as payload (cron/key injection)",
-                "mitre_id": "T1053.003", "mitre_technique": "Scheduled Task: Cron",
-                "mitre_tactic": "Persistence",
-                "mitre_url": "https://attack.mitre.org/techniques/T1053/003/",
-            },
-            {
-                "event_type": "eval_attempt", "label": "EVAL Script",
-                "desc": "Lua script via EVAL captured as payload",
-                "mitre_id": "T1059", "mitre_technique": "Command and Scripting Interpreter",
-                "mitre_tactic": "Execution",
-                "mitre_url": "https://attack.mitre.org/techniques/T1059/",
-            },
-            {
-                "event_type": "command", "label": "Unknown Command",
-                "desc": "Unrecognised commands logged and saved as payload",
+                "event_type": "command", "label": "Commands",
+                "desc": "Commands issued after connecting, logged and saved as payload",
                 "mitre_id": "T1210", "mitre_technique": "Exploitation of Remote Services",
                 "mitre_tactic": "Lateral Movement",
                 "mitre_url": "https://attack.mitre.org/techniques/T1210/",
+            },
+        ],
+    },
+    {
+        "service": "MYSQL", "port": 3306, "banner": "MySQL 5.7.44-log",
+        "detections": [
+            {
+                "event_type": "credential", "label": "Login Attempt",
+                "desc": "MySQL client handshake credentials captured",
+                "mitre_id": "T1110", "mitre_technique": "Brute Force",
+                "mitre_tactic": "Credential Access",
+                "mitre_url": "https://attack.mitre.org/techniques/T1110/",
+            },
+        ],
+    },
+    {
+        "service": "POSTGRES", "port": 5432, "banner": "PostgreSQL 13.11",
+        "detections": [
+            {
+                "event_type": "credential", "label": "Login Attempt",
+                "desc": "Postgres startup-message credentials captured",
+                "mitre_id": "T1110", "mitre_technique": "Brute Force",
+                "mitre_tactic": "Credential Access",
+                "mitre_url": "https://attack.mitre.org/techniques/T1110/",
             },
         ],
     },
@@ -385,61 +407,6 @@ def search_logs():
 def index():
     return render_template("index.html")
 
-@app.route("/api/config", methods=["GET", "POST"])
-def manage_config():
-    if request.method == "POST":
-        data = request.json or {}
-        # Update .env file (simplified version)
-        env_updates = {
-            "DISCORD_WEBHOOK_URL": data.get("discord_webhook_url"),
-            "ABUSEIPDB_API_KEY": data.get("abuseipdb_api_key"),
-            "GEMINI_API_KEY": data.get("gemini_api_key"),
-            "VIRUSTOTAL_API_KEY": data.get("virustotal_api_key"),
-            "ALERT_ON_CONNECT": "1" if data.get("alerts", {}).get("on_connect") else "0",
-            "ALERT_ON_CREDENTIAL": "1" if data.get("alerts", {}).get("on_credential") else "0",
-            "ALERT_ON_EXEC": "1" if data.get("alerts", {}).get("on_exec") else "0",
-            "ALERT_ON_DOWNLOAD": "1" if data.get("alerts", {}).get("on_download") else "0",
-        }
-        
-        try:
-            # Read existing .env
-            lines = []
-            if os.path.exists(".env"):
-                with open(".env", "r") as f:
-                    lines = f.readlines()
-            
-            # Update or append
-            for key, val in env_updates.items():
-                if val is None: continue
-                found = False
-                for i, line in enumerate(lines):
-                    if line.startswith(f"{key}="):
-                        lines[i] = f"{key}={val}\n"
-                        found = True
-                        break
-                if not found:
-                    lines.append(f"{key}={val}\n")
-            
-            with open(".env", "w") as f:
-                f.writelines(lines)
-                
-            return jsonify({"status": "success", "message": "Settings saved. Restart container to apply."})
-        except Exception as e:
-            return jsonify({"status": "error", "message": str(e)}), 500
-
-    return jsonify({
-        "discord_webhook_url": config.DISCORD_WEBHOOK_URL,
-        "abuseipdb_api_key": config.ABUSEIPDB_API_KEY,
-        "gemini_api_key": config.GEMINI_API_KEY,
-        "virustotal_api_key": config.VIRUSTOTAL_API_KEY,
-        "alerts": {
-            "on_connect": config.ALERT_ON_CONNECT,
-            "on_credential": config.ALERT_ON_CREDENTIAL,
-            "on_exec": config.ALERT_ON_EXEC,
-            "on_download": config.ALERT_ON_DOWNLOAD
-        },
-        "server_location": {"lat": config.SERVER_LAT, "lon": config.SERVER_LON}
-    })
 
 @app.route("/api/events")
 def get_events():
@@ -657,6 +624,107 @@ def attack_stream():
             "X-Accel-Buffering": "no",
         },
     )
+
+
+def _outbox_authorised():
+    """Constant-time check of the shared outbox token. Fails closed when unset.
+
+    Guards the endpoints below, which let something on your trusted network drain
+    alerts and events from this host without it ever having to call out. See
+    config.py and README.md.
+    """
+    if not config.OUTBOX_TOKEN:
+        return False
+    return hmac.compare_digest(request.headers.get("X-Outbox-Token", ""), config.OUTBOX_TOKEN)
+
+
+@app.route("/api/alerts/pending")
+def alerts_pending():
+    """Alerts waiting to be delivered, oldest first.
+
+    Meant to be drained by something on your trusted network that owns the actual
+    Discord webhook (or other notifier) — this host never talks out to Discord itself.
+    """
+    if not _outbox_authorised():
+        return jsonify({"error": "forbidden"}), 403
+
+    try:
+        limit = min(int(request.args.get("limit", 50)), 200)
+    except ValueError:
+        limit = 50
+
+    conn = _get_db()
+    try:
+        rows = conn.execute(
+            "SELECT id, created, payload FROM alert_outbox ORDER BY id ASC LIMIT ?",
+            (limit,),
+        ).fetchall()
+        return jsonify([
+            {"id": r["id"], "created": r["created"], "payload": json.loads(r["payload"])}
+            for r in rows
+        ])
+    finally:
+        conn.close()
+
+
+@app.route("/api/events/since")
+def events_since():
+    """Events with id greater than `id`, oldest first — incremental tail.
+
+    Useful for something on your trusted network that wants to mirror events out
+    (e.g. into an IDS/IPS's own log ingestion) without this host reaching out itself.
+
+    Ordered by id, not timestamp: id is monotonic, timestamps are not guaranteed to
+    be, and a puller relying on a strict watermark needs that guarantee to avoid
+    re-sending or skipping.
+    """
+    if not _outbox_authorised():
+        return jsonify({"error": "forbidden"}), 403
+
+    try:
+        since_id = int(request.args.get("id", 0))
+    except ValueError:
+        since_id = 0
+    try:
+        limit = min(int(request.args.get("limit", 500)), 2000)
+    except ValueError:
+        limit = 500
+
+    conn = _get_db()
+    try:
+        rows = conn.execute(
+            "SELECT * FROM events WHERE id > ? ORDER BY id ASC LIMIT ?",
+            (since_id, limit),
+        ).fetchall()
+        return jsonify([dict(r) for r in rows])
+    finally:
+        conn.close()
+
+
+@app.route("/api/alerts/ack", methods=["POST"])
+def alerts_ack():
+    """Delete alerts that have been successfully delivered elsewhere."""
+    if not _outbox_authorised():
+        return jsonify({"error": "forbidden"}), 403
+
+    body = request.get_json(silent=True) or {}
+    ids = body.get("ids") or []
+    # Only accept ints, so the ids can never be used to shape the SQL.
+    ids = [int(i) for i in ids if isinstance(i, int) or str(i).isdigit()]
+    if not ids:
+        return jsonify({"deleted": 0})
+
+    conn = _get_db()
+    try:
+        placeholders = ",".join("?" * len(ids))
+        cur = conn.execute(
+            f"DELETE FROM alert_outbox WHERE id IN ({placeholders})", ids
+        )
+        conn.commit()
+        return jsonify({"deleted": cur.rowcount})
+    finally:
+        conn.close()
+
 
 def start_dashboard():
     app.run(

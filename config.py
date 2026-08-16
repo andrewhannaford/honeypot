@@ -32,21 +32,54 @@ FTP_PORT = 21
 TELNET_PORT = 23
 SMTP_PORT = 25
 REDIS_PORT = 6379
+MYSQL_PORT = 3306
+POSTGRES_PORT = 5432
 DASHBOARD_PORT = 8080
+
+# HTTPS trap. Port 443 is not necessarily available on every deployment's public IP
+# (a reverse proxy may already own the WAN side), so the trap binds locally on
+# HTTPS_PORT and gets published on whatever WAN port your setup forwards to it.
+HTTPS_PORT = _positive_int("HTTPS_PORT", 8443)
+HTTPS_CERT_CN = os.environ.get("HTTPS_CERT_CN", "web-prod-01.internal")
+
+# Reverse proxies whose X-Forwarded-For we trust. If phantom-host / reverse-proxied
+# traffic reaches the HTTP trap through something like Traefik or nginx, without this
+# every proxied attacker is logged as the proxy's own IP and geo/abuse enrichment is
+# useless. Only honoured when the DIRECT peer is in this set, so a direct attacker
+# cannot spoof their IP by sending a fake XFF header. Empty by default — set this to
+# your reverse proxy's IP(s) if you put one in front of the honeypot.
+TRUSTED_PROXIES = set(
+    p.strip() for p in os.environ.get("TRUSTED_PROXIES", "").split(",") if p.strip()
+)
+
+# Banners for the database traps. Pick versions old enough to look neglected and
+# worth attacking, but not so old they read as obviously fake.
+MYSQL_VERSION = os.environ.get("MYSQL_VERSION", "5.7.44-log")
+POSTGRES_VERSION = os.environ.get("POSTGRES_VERSION", "13.11")
 
 # Logging
 LOG_DIR = "logs"
 DATA_DIR = "data"           # persisted Docker volume — holds DB and SSH key
 DB_PATH = "data/honeypot.db"
 
-# Discord webhook URL — set via environment variable or paste directly
-DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL", "")
+# The Discord webhook URL deliberately does not live here.
+#
+# A honeypot is designed to be compromised, so by default it should make no outbound
+# HTTPS calls and hold no webhook secret of its own. alerts/discord.py queues
+# formatted alerts into a local `alert_outbox` table instead of calling Discord
+# directly; something on your trusted network (not this host) should poll
+# /api/alerts/pending, deliver them, and POST /api/alerts/ack. See README.md.
+#
+# Max rows kept in alert_outbox. If nothing is draining it, oldest alerts are dropped
+# rather than letting the table grow without bound.
+ALERT_OUTBOX_MAX = _positive_int("ALERT_OUTBOX_MAX", 5000)
+
+# Shared token guarding the outbox endpoints on the dashboard. Empty = those endpoints
+# refuse every request (fail closed).
+OUTBOX_TOKEN = os.environ.get("OUTBOX_TOKEN", "")
 
 # AbuseIPDB API key — set via environment variable
 ABUSEIPDB_API_KEY = os.environ.get("ABUSEIPDB_API_KEY", "")
-
-# Gemini API key for LLM-enhanced fake shell
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 
 # VirusTotal API key for payload analysis
 VIRUSTOTAL_API_KEY = os.environ.get("VIRUSTOTAL_API_KEY", "")
@@ -62,7 +95,12 @@ DISCORD_ALERT_COOLDOWN = _positive_int("DISCORD_ALERT_COOLDOWN", 60)
 
 # "Victim" coordinates for attack-map arcs (honeypot server location)
 def _resolve_server_coords():
-    """Return (lat, lon) from env vars if set, else auto-detect via public IP geo-lookup."""
+    """Return (lat, lon) from env vars if set, else auto-detect via public IP geo-lookup.
+
+    Deployments that don't want this host making an outbound call on startup (or don't
+    want their real location on the map) should always set SERVER_LAT/SERVER_LON
+    explicitly — then this function never reaches the ipinfo.io lookup below.
+    """
     lat_env = os.environ.get("SERVER_LAT", "").strip()
     lon_env = os.environ.get("SERVER_LON", "").strip()
     if lat_env and lon_env:
