@@ -4,15 +4,30 @@ services:
     network_mode: host
     cap_add: [NET_BIND_SERVICE]
     environment:
-      - DISCORD_WEBHOOK_URL=${DISCORD_WEBHOOK_URL:-}
+      # No DISCORD_WEBHOOK_URL here by design — the webhook secret lives on your
+      # trusted network, not on this box. See config.py and README.md.
+      - OUTBOX_TOKEN=${OUTBOX_TOKEN:-}
+      - ALERT_OUTBOX_MAX=${ALERT_OUTBOX_MAX:-5000}
       - ABUSEIPDB_API_KEY=${ABUSEIPDB_API_KEY:-}
-      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
+      - VIRUSTOTAL_API_KEY=${VIRUSTOTAL_API_KEY:-}
+      - TRUSTED_PROXIES=${TRUSTED_PROXIES:-}
       - SERVER_LAT=${SERVER_LAT:-}
       - SERVER_LON=${SERVER_LON:-}
       - SSH_ACCEPT_RATE=${SSH_ACCEPT_RATE:-5}
       - TELNET_ACCEPT_RATE=${TELNET_ACCEPT_RATE:-3}
+      - HTTPS_PORT=${HTTPS_PORT:-8443}
+      - HTTPS_CERT_CN=${HTTPS_CERT_CN:-web-prod-01.internal}
+      - MYSQL_VERSION=${MYSQL_VERSION:-5.7.44-log}
+      - POSTGRES_VERSION=${POSTGRES_VERSION:-13.11}
     volumes:
-      - ./data:/app/data
+      - honeypot-data:/app/data
+      # Bind-mounted, not a named volume: suricata_logger.py inside this
+      # container tails logs/suricata/eve.json, which only the suricata
+      # container below writes to. They need to share one host directory tree
+      # for that subpath relationship to exist — a named volume mounted at
+      # /app/logs here and separately at /var/log/suricata in the suricata
+      # container would NOT nest the same way (each mount would put suricata's
+      # files at the volume's root, not under a "suricata/" subdirectory).
       - ./logs:/app/logs
     restart: unless-stopped
 
@@ -20,13 +35,15 @@ services:
     image: jasonish/suricata:latest
     network_mode: host
     cap_add: [NET_ADMIN, NET_RAW, SYS_NICE]
+    # Set SURICATA_IFACE in .env to match your network interface (run
+    # "ip link show" to find yours — the default below is almost certainly wrong
+    # for your host).
     command: --af-packet=${SURICATA_IFACE:-ens33}
     volumes:
       - ./logs/suricata:/var/log/suricata
-      - ./suricata.yaml:/etc/suricata/suricata.yaml
-      - ./suricata.rules:/var/lib/suricata/rules/suricata.rules
+      - ./suricata.yaml:/etc/suricata/suricata.yaml:ro
+      - ./suricata.rules:/var/lib/suricata/rules/suricata.rules:ro
     restart: unless-stopped
 
 volumes:
   honeypot-data:
-  honeypot-logs:
