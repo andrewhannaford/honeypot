@@ -236,42 +236,49 @@ class TestLogger(unittest.TestCase):
 # ─────────────────────────────────────────────────────────────────
 
 class TestDiscordAlerts(unittest.TestCase):
+    """alerts/discord.py queues into the local alert_outbox table instead of calling
+    Discord directly (see config.py's OUTBOX_TOKEN comment) — there is deliberately no
+    "is a webhook configured" gate any more, so these tests exercise send_alert()'s
+    alert_type/cooldown/toggle logic against the outbox-facing _post(), not an HTTP call.
+    """
 
     def setUp(self):
         import alerts.discord as d
 
         d._cooldown_last_sent.clear()
 
-    def test_no_op_when_no_webhook_url(self):
-        # discord.py copies DISCORD_WEBHOOK_URL into its own namespace at import,
-        # so we must patch the module-level name directly.
-        with patch("alerts.discord.DISCORD_WEBHOOK_URL", ""):
-            with patch("requests.post") as mock_post:
-                from alerts.discord import send_alert
-                send_alert("SSH", "1.2.3.4", "test", alert_type="connect")
-                time.sleep(0.1)
-                mock_post.assert_not_called()
+    def test_queues_into_outbox_with_no_config_at_all(self):
+        """No OUTBOX_TOKEN, no webhook, nothing configured — alerts still queue
+        locally. Delivery being unconfigured must never mean events go unrecorded."""
+        import sqlite3
+        from config import DB_PATH
+        from alerts.discord import send_alert
+
+        send_alert("SSH", "1.2.3.4", "test", alert_type="connect")
+        time.sleep(0.1)
+
+        conn = sqlite3.connect(DB_PATH)
+        try:
+            count = conn.execute("SELECT COUNT(*) FROM alert_outbox").fetchone()[0]
+        finally:
+            conn.close()
+        self.assertGreaterEqual(count, 1)
 
     def test_connect_alert_suppressed_when_disabled(self):
-        # Patch module-level names directly — no reload needed or safe here.
-        with patch("alerts.discord.DISCORD_WEBHOOK_URL", "https://example.com/webhook"):
-            with patch("alerts.discord.ALERT_ON_CONNECT", False):
-                with patch("alerts.discord._post") as mock_post:
-                    from alerts.discord import send_alert
-                    send_alert("SSH", "1.2.3.4", "New connection", alert_type="connect")
-                    time.sleep(0.2)
-                    mock_post.assert_not_called()
+        with patch("alerts.discord.ALERT_ON_CONNECT", False):
+            with patch("alerts.discord._post") as mock_post:
+                from alerts.discord import send_alert
+                send_alert("SSH", "1.2.3.4", "New connection", alert_type="connect")
+                time.sleep(0.2)
+                mock_post.assert_not_called()
 
     def test_credential_alert_uses_red_color(self):
         captured = {}
 
-        # Patch _post directly so we don't race against the background thread
-        # outliving the requests.post mock context.
-        with patch("alerts.discord.DISCORD_WEBHOOK_URL", "https://example.com/hook"):
-            with patch("alerts.discord._post", side_effect=lambda p: captured.update({"payload": p})):
-                from alerts.discord import send_alert
-                send_alert("SSH", "1.2.3.4", "Login attempt", alert_type="credential")
-                time.sleep(0.2)
+        with patch("alerts.discord._post", side_effect=lambda p: captured.update({"payload": p})):
+            from alerts.discord import send_alert
+            send_alert("SSH", "1.2.3.4", "Login attempt", alert_type="credential")
+            time.sleep(0.2)
 
         self.assertIn("payload", captured)
         self.assertEqual(captured["payload"]["embeds"][0]["color"], 0xFF4444)
@@ -279,85 +286,77 @@ class TestDiscordAlerts(unittest.TestCase):
     def test_connect_alert_uses_orange_color(self):
         captured = {}
 
-        with patch("alerts.discord.DISCORD_WEBHOOK_URL", "https://example.com/hook"):
-            with patch("alerts.discord._post", side_effect=lambda p: captured.update({"payload": p})):
-                from alerts.discord import send_alert
-                send_alert("FTP", "2.3.4.5", "New connection", alert_type="connect")
-                time.sleep(0.2)
+        with patch("alerts.discord._post", side_effect=lambda p: captured.update({"payload": p})):
+            from alerts.discord import send_alert
+            send_alert("FTP", "2.3.4.5", "New connection", alert_type="connect")
+            time.sleep(0.2)
 
         self.assertIn("payload", captured)
         self.assertEqual(captured["payload"]["embeds"][0]["color"], 0xFFA500)
 
     def test_unknown_alert_type_dropped(self):
-        with patch("alerts.discord.DISCORD_WEBHOOK_URL", "https://example.com/hook"):
+        with patch("alerts.discord._post") as mock_post:
+            import alerts.discord as d
+
+            d.send_alert("SSH", "1.2.3.4", "x", alert_type="foobar")
+            time.sleep(0.2)
+            mock_post.assert_not_called()
+
+    def test_exec_alert_fires(self):
+        with patch("alerts.discord._post") as mock_post:
+            import alerts.discord as d
+
+            d.send_alert("SSH", "9.9.9.9", "exec", alert_type="exec_attempt")
+            time.sleep(0.2)
+            mock_post.assert_called_once()
+
+    def test_cooldown_deduplicates(self):
+        with patch("alerts.discord._post") as mock_post:
+            with patch("alerts.discord.time.time", side_effect=[1000.0, 1030.0]):
+                import alerts.discord as d
+
+                d.send_alert("SSH", "8.8.8.8", "a", alert_type="exec_attempt")
+                d.send_alert("SSH", "8.8.8.8", "b", alert_type="exec_attempt")
+            time.sleep(0.2)
+            self.assertEqual(mock_post.call_count, 1)
+
+    def test_credential_alert_suppressed_when_disabled(self):
+        with patch("alerts.discord.ALERT_ON_CREDENTIAL", False):
             with patch("alerts.discord._post") as mock_post:
                 import alerts.discord as d
 
-                d.send_alert("SSH", "1.2.3.4", "x", alert_type="foobar")
+                d.send_alert("SSH", "1.2.3.4", "Login", alert_type="credential")
                 time.sleep(0.2)
                 mock_post.assert_not_called()
 
-    def test_exec_alert_fires(self):
-        with patch("alerts.discord.DISCORD_WEBHOOK_URL", "https://example.com/hook"):
+    def test_download_alert_suppressed_when_disabled(self):
+        with patch("alerts.discord.ALERT_ON_DOWNLOAD", False):
             with patch("alerts.discord._post") as mock_post:
                 import alerts.discord as d
 
-                d.send_alert("SSH", "9.9.9.9", "exec", alert_type="exec_attempt")
+                d.send_alert("SSH", "1.2.3.4", "wget", alert_type="download_attempt")
                 time.sleep(0.2)
-                mock_post.assert_called_once()
-
-    def test_cooldown_deduplicates(self):
-        with patch("alerts.discord.DISCORD_WEBHOOK_URL", "https://example.com/hook"):
-            with patch("alerts.discord._post") as mock_post:
-                with patch("alerts.discord.time.time", side_effect=[1000.0, 1030.0]):
-                    import alerts.discord as d
-
-                    d.send_alert("SSH", "8.8.8.8", "a", alert_type="exec_attempt")
-                    d.send_alert("SSH", "8.8.8.8", "b", alert_type="exec_attempt")
-                time.sleep(0.2)
-                self.assertEqual(mock_post.call_count, 1)
-
-    def test_credential_alert_suppressed_when_disabled(self):
-        with patch("alerts.discord.DISCORD_WEBHOOK_URL", "https://example.com/hook"):
-            with patch("alerts.discord.ALERT_ON_CREDENTIAL", False):
-                with patch("alerts.discord._post") as mock_post:
-                    import alerts.discord as d
-
-                    d.send_alert("SSH", "1.2.3.4", "Login", alert_type="credential")
-                    time.sleep(0.2)
-                    mock_post.assert_not_called()
-
-    def test_download_alert_suppressed_when_disabled(self):
-        with patch("alerts.discord.DISCORD_WEBHOOK_URL", "https://example.com/hook"):
-            with patch("alerts.discord.ALERT_ON_DOWNLOAD", False):
-                with patch("alerts.discord._post") as mock_post:
-                    import alerts.discord as d
-
-                    d.send_alert("SSH", "1.2.3.4", "wget", alert_type="download_attempt")
-                    time.sleep(0.2)
-                    mock_post.assert_not_called()
+                mock_post.assert_not_called()
 
     def test_exec_alert_suppressed_when_disabled(self):
-        with patch("alerts.discord.DISCORD_WEBHOOK_URL", "https://example.com/hook"):
-            with patch("alerts.discord.ALERT_ON_EXEC", False):
-                with patch("alerts.discord._post") as mock_post:
-                    import alerts.discord as d
+        with patch("alerts.discord.ALERT_ON_EXEC", False):
+            with patch("alerts.discord._post") as mock_post:
+                import alerts.discord as d
 
-                    d.send_alert("SSH", "1.2.3.4", "exec", alert_type="exec_attempt")
-                    time.sleep(0.2)
-                    mock_post.assert_not_called()
+                d.send_alert("SSH", "1.2.3.4", "exec", alert_type="exec_attempt")
+                time.sleep(0.2)
+                mock_post.assert_not_called()
 
     def test_cooldown_is_per_alert_type(self):
         """Same IP, different alert_type — both may fire within cooldown window."""
-        with patch("alerts.discord.DISCORD_WEBHOOK_URL", "https://example.com/hook"):
-            with patch("alerts.discord._post") as mock_post:
-                with patch("alerts.discord.time.time", return_value=5000.0):
-                    import alerts.discord as d
+        with patch("alerts.discord._post") as mock_post:
+            with patch("alerts.discord.time.time", return_value=5000.0):
+                import alerts.discord as d
 
-                    d.send_alert("SSH", "1.1.1.1", "c", alert_type="connect")
-                    d.send_alert("SSH", "1.1.1.1", "e", alert_type="exec_attempt")
-                time.sleep(0.25)
-                self.assertEqual(mock_post.call_count, 2)
+                d.send_alert("SSH", "1.1.1.1", "c", alert_type="connect")
+                d.send_alert("SSH", "1.1.1.1", "e", alert_type="exec_attempt")
+            time.sleep(0.25)
+            self.assertEqual(mock_post.call_count, 2)
 
 
 # ─────────────────────────────────────────────────────────────────
