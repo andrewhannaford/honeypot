@@ -249,15 +249,26 @@ class TestDiscordAlerts(unittest.TestCase):
 
     def test_queues_into_outbox_with_no_config_at_all(self):
         """No OUTBOX_TOKEN, no webhook, nothing configured — alerts still queue
-        locally. Delivery being unconfigured must never mean events go unrecorded."""
+        locally. Delivery being unconfigured must never mean events go unrecorded.
+
+        Uses its own tmp DB rather than the shared default: both logger.py and
+        alerts/discord.py do `from config import DB_PATH` (a name import), so
+        patching config.DB_PATH doesn't redirect them — logger.DB_PATH and
+        alerts.discord.DB_PATH have to be patched directly.
+        """
         import sqlite3
-        from config import DB_PATH
-        from alerts.discord import send_alert
+        from logger import init_db
 
-        send_alert("SSH", "1.2.3.4", "test", alert_type="connect")
-        time.sleep(0.1)
+        tmp_db = os.path.join(tempfile.mkdtemp(), "outbox_test.db")
+        with patch("logger.DB_PATH", tmp_db):
+            init_db()
 
-        conn = sqlite3.connect(DB_PATH)
+        with patch("alerts.discord.DB_PATH", tmp_db):
+            from alerts.discord import send_alert
+            send_alert("SSH", "1.2.3.4", "test", alert_type="connect")
+            time.sleep(0.1)
+
+        conn = sqlite3.connect(tmp_db)
         try:
             count = conn.execute("SELECT COUNT(*) FROM alert_outbox").fetchone()[0]
         finally:
@@ -549,9 +560,13 @@ class TestDashboard(unittest.TestCase):
         # so this fixture can't drift out of sync with the real schema again — that's
         # exactly what broke it last time (abuse_score/country/city/lat/lon all added
         # after this table was first written by hand).
+        #
+        # Patch logger.DB_PATH, not config.DB_PATH: logger.py does
+        # `from config import ... DB_PATH` (a name import bound once at import time),
+        # so patching the config module's attribute doesn't reach it.
         from logger import init_db
 
-        with patch("config.DB_PATH", self._db):
+        with patch("logger.DB_PATH", self._db):
             init_db()
 
         import sqlite3
