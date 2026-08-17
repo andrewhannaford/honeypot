@@ -19,8 +19,8 @@ RUN mkdir -p logs data
 # Fixed UID/GID (not just a name) because both /app/data (named volume) and /app/logs
 # (bind mount) are real host-persisted paths whose ownership has to be set to match
 # from the deploy side — see README.md's "Non-root user" note.
-RUN groupadd --system --gid 10001 honeypot && \
-    useradd --system --uid 10001 --gid honeypot --no-create-home --shell /usr/sbin/nologin honeypot && \
+RUN groupadd --gid 10001 honeypot && \
+    useradd --uid 10001 --gid honeypot --no-create-home --shell /usr/sbin/nologin honeypot && \
     chown -R honeypot:honeypot /app
 USER honeypot
 
