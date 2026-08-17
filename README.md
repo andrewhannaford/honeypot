@@ -99,6 +99,30 @@ reaching out itself.
 All of this is only reachable with a valid `OUTBOX_TOKEN` — leaving it unset fails
 closed (every request to these three endpoints gets a 403).
 
+## Security: non-root user
+
+The container runs as a fixed non-root user (uid/gid `10001`), not root — `CAP_NET_BIND_SERVICE`
+(already in `docker-compose.yml`) is what actually lets it bind the low ports (21/22/23/25/80)
+without needing root.
+
+**Fresh deployment:** nothing to do — the Dockerfile chowns `/app` before switching to
+that user, and Docker copies that ownership into `data`/`logs` the first time it
+creates those volumes/mounts.
+
+**Existing deployment upgrading from an older, root-running image:** the running
+container has already been writing files as root, so you need to fix ownership on the
+existing data before switching, or the app will get permission-denied trying to read
+its own SSH host key / write its own database:
+
+```bash
+docker compose down
+sudo chown -R 10001:10001 "$(docker volume inspect -f '{{ .Mountpoint }}' honeypot_honeypot-data)"
+sudo chown 10001:10001 ./logs ./logs/honeypot.jsonl   # not -R: leaves logs/suricata/
+                                                        # (owned by the suricata
+                                                        # container's own user) alone
+docker compose up -d --build
+```
+
 ## Security: dashboard and logs
 
 - The Flask dashboard listens on **`0.0.0.0:8080`** by default — any host that can
