@@ -655,31 +655,6 @@
     }
     .siem-meta-count { font-weight: 700; color: var(--text-bright); }
     .siem-meta-sep { color: var(--border-light); }
-    .siem-filter-tag {
-      display: inline-flex;
-      align-items: center;
-      gap: 0.2rem;
-      background: var(--accent-glow);
-      border: 1px solid var(--accent);
-      color: var(--accent-light);
-      border-radius: 4px;
-      font-size: 0.68rem;
-      font-weight: 700;
-      padding: 0.08rem 0.35rem;
-      font-family: "SF Mono","Fira Code","Consolas",monospace;
-    }
-    .siem-filter-tag-x {
-      background: none;
-      border: none;
-      color: inherit;
-      cursor: pointer;
-      font-size: 0.8rem;
-      line-height: 1;
-      padding: 0;
-      margin-left: 0.15rem;
-      opacity: 0.65;
-    }
-    .siem-filter-tag-x:hover { opacity: 1; }
 
 
     .log-data { max-width: 255px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: monospace; font-size: 0.73rem; color: var(--text); cursor: pointer; }
@@ -1016,11 +991,11 @@
             <path fill-rule="evenodd" d="M8 4a4 4 0 100 8 4 4 0 000-8zM2 8a6 6 0 1110.89 3.476l4.817 4.817a1 1 0 01-1.414 1.414l-4.816-4.816A6 6 0 012 8z" clip-rule="evenodd"/>
           </svg>
           <textarea id="event-q" class="siem-query-input" rows="2"
-            placeholder="service:SSH  event_type:credential  ip:10.0.0.*  wget"
+            placeholder='(service:SSH OR service:TELNET) AND risk_score>=50 -ip:10.0.0.* wget'
             spellcheck="false" autocomplete="off" aria-label="SIEM Query"
             onkeydown="if((event.ctrlKey||event.metaKey)&&event.key==='Enter'){event.preventDefault();loadEvents(true)}"
           ></textarea>
-          <span class="siem-query-hint">Ctrl+Enter to run</span>
+          <span class="siem-query-hint" title="field:value  field>N  field>=N  AND / OR / NOT / -field:value  (grouping)  &quot;quoted phrase&quot;">AND/OR/NOT, &gt;/&gt;= · Ctrl+Enter to run</span>
         </div>
         <div class="siem-controls">
           <div class="siem-time-group">
@@ -1047,6 +1022,7 @@
         </div>
         <div class="siem-quick-filters">
           <span class="siem-quick-label">Quick</span>
+          <button class="siem-pill" onclick="siemQuick('risk_score>=70')">High Risk</button>
           <button class="siem-pill" onclick="siemQuick('event_type:credential')">Credentials</button>
           <button class="siem-pill" onclick="siemQuick('event_type:download_attempt')">Downloads</button>
           <button class="siem-pill" onclick="siemQuick('event_type:exec_attempt')">Exec</button>
@@ -1304,7 +1280,16 @@
     async function fetchAPI(url, options = {}) {
       try {
         const res = await fetch(url, options);
-        if (!res.ok) throw new Error(`API error: ${res.status}`);
+        if (!res.ok) {
+          // Prefer the API's own {"error": "..."} message (e.g. query_lang.py's
+          // QueryError text) over a generic status-code string, when there is one.
+          let msg = `API error: ${res.status}`;
+          try {
+            const body = await res.clone().json();
+            if (body && body.error) msg = body.error;
+          } catch { /* not JSON, or no body */ }
+          throw new Error(msg);
+        }
         return await res.json();
       } catch (err) {
         showError(err.message);
@@ -1490,23 +1475,6 @@
     const _evLimit = 100;
     let _evTimeRange = '24h';
 
-    function _parseQuery(text) {
-      const out = { q: '', service: '', event_type: '', ip: '' };
-      const re = /(\w+):"([^"]*?)"|(\w+):(\S+)/g;
-      let m;
-      const replaced = [];
-      while ((m = re.exec(text)) !== null) {
-        const field = (m[1] || m[3]).toLowerCase();
-        const value = (m[2] !== undefined ? m[2] : m[4]);
-        if (field === 'service') out.service = value.toUpperCase();
-        else if (field === 'event_type' || field === 'type') out.event_type = value;
-        else if (field === 'ip') out.ip = value;
-        replaced.push(m[0]);
-      }
-      out.q = replaced.reduce((t, tok) => t.replace(tok, ''), text).trim().replace(/\s+/g, ' ');
-      return out;
-    }
-
     function _getDateRange() {
       if (_evTimeRange === 'custom') {
         return {
@@ -1537,8 +1505,10 @@
 
     function siemQuick(token) {
       const el    = document.getElementById('event-q');
-      const field = token.split(':')[0];
-      const clean = el.value.replace(new RegExp(`${field}:\\S+`, 'g'), '').trim();
+      // Strip any earlier clause on the same field (whichever operator it used) before
+      // adding this one, so repeated clicks don't pile up e.g. two risk_score clauses.
+      const field = token.split(/[:><]/)[0];
+      const clean = el.value.replace(new RegExp(`${field}(?:>=|<=|>|<|:)\\S+`, 'g'), '').trim();
       el.value    = (clean ? clean + '  ' : '') + token;
       loadEvents(true);
     }
@@ -1547,47 +1517,40 @@
       if (resetPage) _evOffset = 0;
 
       const raw   = document.getElementById('event-q').value;
-      const pq    = _parseQuery(raw);
       const range = _getDateRange();
+      const metaEl = document.getElementById('event-meta');
 
       const params = new URLSearchParams({
-        q:          pq.q,
-        service:    pq.service,
-        event_type: pq.event_type,
-        ip:         pq.ip,
-        from_date:  range.from_date,
-        to_date:    range.to_date,
+        q: raw,
+        from_date: range.from_date,
+        to_date:   range.to_date,
         limit:  _evLimit,
         offset: _evOffset,
       });
 
-      const t0   = performance.now();
-      const data = await fetchAPI('/api/search?' + params);
-      const ms   = Math.round(performance.now() - t0);
+      // query_lang.py parses `q` server-side now (AND/OR/NOT, comparisons,
+      // parentheses, quoted phrases — see its docstring) — a malformed query comes
+      // back as a 400 with a specific error message rather than a silent empty
+      // result, so show that instead of clearing the table out from under the user.
+      let data;
+      try {
+        const t0 = performance.now();
+        data = await fetchAPI('/api/search?' + params);
+        var ms = Math.round(performance.now() - t0);
+      } catch (err) {
+        metaEl.innerHTML = `<span style="color:var(--danger)">${esc(err.message)}</span>`;
+        return;
+      }
       const { total, results } = data;
 
-      // Meta bar — result count + active filter tags
-      const tags = [];
-      if (pq.service)    tags.push({ label: `service:${pq.service}`,    rm: () => { el.value = el.value.replace(new RegExp(`service:\\S+`,'g'),'').trim(); loadEvents(true); } });
-      if (pq.event_type) tags.push({ label: `event_type:${pq.event_type}`, rm: () => { el.value = el.value.replace(new RegExp(`(?:event_type|type):\\S+`,'g'),'').trim(); loadEvents(true); } });
-      if (pq.ip)         tags.push({ label: `ip:${pq.ip}`,              rm: () => { el.value = el.value.replace(new RegExp(`ip:\\S+`,'g'),'').trim(); loadEvents(true); } });
-      if (pq.q)          tags.push({ label: `"${pq.q}"` });
-
-      const el = document.getElementById('event-q');
-      const metaEl = document.getElementById('event-meta');
       if (total === 0) {
         metaEl.innerHTML = '<span style="color:var(--text-muted)">No events matched your query.</span>';
       } else {
-        const tagHtml = tags.map((t, i) =>
-          `<span class="siem-filter-tag">${esc(t.label)}${t.rm ? `<button class="siem-filter-tag-x" onclick="_rmTag(${i})" title="Remove filter">×</button>` : ''}</span>`
-        ).join('');
         metaEl.innerHTML =
           `<span class="siem-meta-count">${total.toLocaleString()}</span> events`
           + ` <span class="siem-meta-sep">·</span> ${ms}ms`
-          + (tags.length ? ` <span class="siem-meta-sep">·</span> ${tagHtml}` : '')
           + ` <span class="siem-meta-sep">·</span> <span style="color:var(--text-muted)">showing ${_evOffset + 1}–${Math.min(_evOffset + _evLimit, total).toLocaleString()}</span>`;
       }
-      window._evTagRmFns = tags.map(t => t.rm).filter(Boolean);
 
       document.getElementById('events-table').innerHTML = results.map(e => {
         let preview = '—';
@@ -1623,8 +1586,6 @@
 
       return results;
     }
-
-    function _rmTag(i) { if (window._evTagRmFns?.[i]) window._evTagRmFns[i](); }
 
     function toggleEventRow(rowId) {
       const expandId = rowId + '-exp';

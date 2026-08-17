@@ -8,6 +8,7 @@ import io
 from datetime import datetime, timedelta, timezone
 from flask import Flask, Response, jsonify, render_template, stream_with_context, request
 import config
+import query_lang
 from logger import register_event_callback
 
 app = Flask(__name__)
@@ -361,30 +362,24 @@ def delete_detection(det_id):
 
 @app.route("/api/search")
 def search_logs():
-    q = request.args.get("q", "").strip()
-    svc = request.args.get("service", "")
-    etype = request.args.get("event_type", "")
-    ip_filter = request.args.get("ip", "").strip()
+    """SIEM-style search. `q` is a full query_lang.py expression — see that module's
+    docstring for the grammar (field:value, >/>=/</<=, AND/OR/NOT, "-" negation,
+    parentheses, quoted phrases). from_date/to_date stay separate query params (they
+    drive the time-range buttons in the UI, not the query text)."""
+    q = request.args.get("q", "")
     from_date = request.args.get("from_date", "")
     to_date = request.args.get("to_date", "")
     limit = _int_param(request.args, "limit", 100, cap=500)
     offset = _int_param(request.args, "offset", 0)
 
-    conditions = ["1=1"]
-    params = []
+    try:
+        where, params = query_lang.compile_query(q)
+    except query_lang.QueryError as e:
+        return jsonify({"error": str(e)}), 400
 
-    if q:
-        conditions.append("(ip LIKE ? OR data LIKE ?)")
-        params.extend([f"%{q}%", f"%{q}%"])
-    if ip_filter:
-        conditions.append("ip LIKE ?")
-        params.append(ip_filter.replace("*", "%"))
-    if svc:
-        conditions.append("service = ?")
-        params.append(svc)
-    if etype:
-        conditions.append("event_type = ?")
-        params.append(etype)
+    conditions = [where]
+    params = list(params)
+
     if from_date:
         conditions.append("timestamp >= ?")
         params.append(from_date)
@@ -392,14 +387,14 @@ def search_logs():
         conditions.append("timestamp <= ?")
         params.append(to_date + "T23:59:59")
 
-    where = " AND ".join(conditions)
+    where_clause = " AND ".join(conditions)
     conn = _get_db()
     try:
         total = conn.execute(
-            f"SELECT COUNT(*) as c FROM events WHERE {where}", params
+            f"SELECT COUNT(*) as c FROM events WHERE {where_clause}", params
         ).fetchone()["c"]
         rows = conn.execute(
-            f"SELECT * FROM events WHERE {where} ORDER BY timestamp DESC LIMIT ? OFFSET ?",
+            f"SELECT * FROM events WHERE {where_clause} ORDER BY timestamp DESC LIMIT ? OFFSET ?",
             params + [limit, offset],
         ).fetchall()
         return jsonify({"total": total, "results": [dict(r) for r in rows]})

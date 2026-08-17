@@ -54,6 +54,46 @@ class TestDashboard(unittest.TestCase):
         self.assertEqual(len(data), 1)
         self.assertEqual(data[0]["ip"], "2.2.2.2")
 
+    def test_api_search_with_query_language(self):
+        log_event("1.1.1.1", 22, "SSH", "credential", {"username": "root", "password": "x"})
+        log_event("2.2.2.2", 80, "HTTP", "connect")
+
+        res = self.client.get("/api/search?q=" + "service:SSH AND event_type:credential")
+        self.assertEqual(res.status_code, 200)
+        data = res.get_json()
+        self.assertEqual(data["total"], 1)
+        self.assertEqual(data["results"][0]["ip"], "1.1.1.1")
+
+    def test_api_search_or_across_services(self):
+        log_event("1.1.1.1", 22, "SSH", "connect")
+        log_event("2.2.2.2", 23, "TELNET", "connect")
+        log_event("3.3.3.3", 80, "HTTP", "connect")
+
+        res = self.client.get("/api/search?q=" + "service:SSH OR service:TELNET")
+        data = res.get_json()
+        self.assertEqual(data["total"], 2)
+
+    def test_api_search_empty_query_returns_everything(self):
+        log_event("1.1.1.1", 22, "SSH", "connect")
+        log_event("2.2.2.2", 80, "HTTP", "connect")
+
+        res = self.client.get("/api/search")
+        data = res.get_json()
+        self.assertEqual(data["total"], 2)
+
+    def test_api_search_bad_query_returns_400_not_500(self):
+        res = self.client.get("/api/search?q=" + "nonsense_field:value")
+        self.assertEqual(res.status_code, 400)
+        self.assertIn("error", res.get_json())
+
+    def test_api_search_respects_date_range_alongside_query_language(self):
+        log_event("1.1.1.1", 22, "SSH", "connect")
+        res = self.client.get(
+            "/api/search?q=service:SSH&from_date=2099-01-01"
+        )
+        data = res.get_json()
+        self.assertEqual(data["total"], 0)  # event is well before the from_date filter
+
     def test_export_csv_headers_and_content(self):
         log_event("1.2.3.4", 22, "SSH", "connect", {"test": "data"})
         res = self.client.get("/api/events/export.csv")
