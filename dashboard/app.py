@@ -9,6 +9,7 @@ from datetime import datetime, timedelta, timezone
 from flask import Flask, Response, jsonify, render_template, stream_with_context, request
 import config
 import query_lang
+import rule_builder
 from logger import register_event_callback
 
 app = Flask(__name__)
@@ -358,6 +359,50 @@ def delete_detection(det_id):
         return jsonify({"status": "deleted"})
     finally:
         conn.close()
+
+
+@app.route("/api/rules", methods=["GET"])
+def list_rules():
+    return jsonify(rule_builder.list_rules())
+
+
+@app.route("/api/rules", methods=["POST"])
+def create_rule():
+    """Builds and saves a real Suricata detection rule, then attempts a live reload
+    over Suricata's unix-command socket (see rule_builder.py). The rule is saved even
+    if the live reload fails — reload_ok/reload_message tell the caller what happened
+    so a transient reload failure doesn't look like the rule silently vanished."""
+    fields = request.get_json(silent=True) or {}
+    try:
+        rule, reload_ok, reload_message = rule_builder.create_rule(fields)
+    except rule_builder.RuleError as e:
+        return jsonify({"error": str(e)}), 400
+    return jsonify({**rule, "reload_ok": reload_ok, "reload_message": reload_message}), 201
+
+
+@app.route("/api/rules/<int:rule_id>/toggle", methods=["POST"])
+def toggle_rule(rule_id):
+    body = request.get_json(silent=True) or {}
+    enabled = bool(body.get("enabled", True))
+    reload_ok, reload_message = rule_builder.set_enabled(rule_id, enabled)
+    return jsonify({"status": "ok", "reload_ok": reload_ok, "reload_message": reload_message})
+
+
+@app.route("/api/rules/<int:rule_id>", methods=["DELETE"])
+def delete_rule(rule_id):
+    reload_ok, reload_message = rule_builder.delete_rule(rule_id)
+    return jsonify({"status": "deleted", "reload_ok": reload_ok, "reload_message": reload_message})
+
+
+@app.route("/api/rules/classtypes")
+def rule_classtypes():
+    """Feeds the rule builder form's dropdown — keeps the allowed list defined in one
+    place (rule_builder.py) rather than duplicated into the frontend."""
+    return jsonify({
+        "classtypes": rule_builder.ALLOWED_CLASSTYPES,
+        "protocols": rule_builder.ALLOWED_PROTOCOLS,
+        "http_fields": [f for f in rule_builder.ALLOWED_HTTP_FIELDS if f],
+    })
 
 
 @app.route("/api/search")

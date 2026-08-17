@@ -30,9 +30,17 @@ logging:
     - console:
         enabled: yes
 
+# Lets the dashboard's rule builder trigger a live "reload-rules" over the unix socket
+# after writing a new rule to custom.rules, instead of needing to restart the
+# container (which briefly drops the af-packet capture).
+unix-command:
+  enabled: yes
+  filename: suricata-command.socket
+
 default-rule-path: /var/lib/suricata/rules
 rule-files:
   - suricata.rules
+  - custom.rules
 
 af-packet:
   - interface: default

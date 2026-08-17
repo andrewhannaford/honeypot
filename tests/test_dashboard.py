@@ -94,6 +94,40 @@ class TestDashboard(unittest.TestCase):
         data = res.get_json()
         self.assertEqual(data["total"], 0)  # event is well before the from_date filter
 
+    def test_api_rules_create_list_toggle_delete(self):
+        from unittest.mock import patch
+        with patch("rule_builder.reload_suricata", return_value=(True, "ok")):
+            res = self.client.post("/api/rules", json={
+                "message": "Test rule", "protocol": "tcp", "dest_port": "4444",
+                "classtype": "attempted-recon", "contents": ["evil"],
+            })
+            self.assertEqual(res.status_code, 201)
+            rule_id = res.get_json()["id"]
+
+            res = self.client.get("/api/rules")
+            self.assertEqual(res.status_code, 200)
+            self.assertEqual(len(res.get_json()), 1)
+
+            res = self.client.post(f"/api/rules/{rule_id}/toggle", json={"enabled": False})
+            self.assertEqual(res.status_code, 200)
+            self.assertFalse(self.client.get("/api/rules").get_json()[0]["enabled"])
+
+            res = self.client.delete(f"/api/rules/{rule_id}")
+            self.assertEqual(res.status_code, 200)
+            self.assertEqual(self.client.get("/api/rules").get_json(), [])
+
+    def test_api_rules_invalid_fields_returns_400(self):
+        res = self.client.post("/api/rules", json={"message": "", "protocol": "tcp"})
+        self.assertEqual(res.status_code, 400)
+        self.assertIn("error", res.get_json())
+
+    def test_api_rules_classtypes_endpoint(self):
+        res = self.client.get("/api/rules/classtypes")
+        self.assertEqual(res.status_code, 200)
+        data = res.get_json()
+        self.assertIn("attempted-recon", data["classtypes"])
+        self.assertIn("tcp", data["protocols"])
+
     def test_export_csv_headers_and_content(self):
         log_event("1.2.3.4", 22, "SSH", "connect", {"test": "data"})
         res = self.client.get("/api/events/export.csv")

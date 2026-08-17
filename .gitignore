@@ -4,6 +4,13 @@ logs/
 *.db
 *.jsonl
 
+# Suricata rules the dashboard's rule builder writes at runtime (rule_builder.py),
+# and its control-socket directory — not source, would just create pointless
+# conflicts with a live deployment's actual rule set on every git pull. setup.sh
+# creates an initial empty custom.rules on first deploy.
+custom.rules
+run/
+
 # Python
 __pycache__/
 *.py[cod]

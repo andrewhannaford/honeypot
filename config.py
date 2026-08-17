@@ -62,6 +62,12 @@ LOG_DIR = "logs"
 DATA_DIR = "data"           # persisted Docker volume — holds DB and SSH key
 DB_PATH = "data/honeypot.db"
 
+# Rules the dashboard's rule builder writes, and the Suricata unix-command control
+# socket it uses to live-reload them — both bind-mounted paths shared with the
+# suricata container (see docker-compose.yml). See rule_builder.py.
+CUSTOM_RULES_PATH = "custom.rules"
+SURICATA_SOCKET_PATH = "suricata_run/suricata-command.socket"
+
 # The Discord webhook URL deliberately does not live here.
 #
 # A honeypot is designed to be compromised, so by default it should make no outbound

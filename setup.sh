@@ -99,6 +99,16 @@ if [ ! -f .env ]; then
     read -r
 fi
 
+# custom.rules is runtime-managed (the dashboard's rule builder writes it — see
+# rule_builder.py), not tracked in git. It has to exist as an actual empty file
+# before the first `docker compose up`, though: docker-compose.yml bind-mounts it
+# into both containers, and Docker silently creates a missing *file* bind-mount
+# source as a directory instead, which breaks Suricata's rule-file loading.
+if [ ! -f custom.rules ]; then
+    echo "# Rules added via the dashboard's rule builder — see rule_builder.py." > custom.rules
+fi
+mkdir -p run/suricata
+
 echo "[*] Building and starting honeypot..."
 docker compose down 2>/dev/null || true
 docker compose up -d --build

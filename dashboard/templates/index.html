@@ -1109,6 +1109,84 @@
         <button class="btn btn-primary btn-sm" onclick="openCreateDet()">+ New Detection</button>
       </div>
       <div id="detections-grid" class="detection-grid"></div>
+
+      <div class="det-toolbar" style="margin-top:1.75rem">
+        <span class="det-toolbar-title">Suricata Rules — network-level IDS signatures, not just event tagging</span>
+        <button class="btn btn-primary btn-sm" onclick="openCreateRule()">+ New Rule</button>
+      </div>
+      <div class="panel">
+        <div class="table-container" style="padding:0">
+          <table>
+            <thead><tr><th>Enabled</th><th>Message</th><th>Match</th><th>Classtype</th><th>SID</th><th></th></tr></thead>
+            <tbody id="rules-table"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- Create Suricata Rule Modal -->
+    <div id="create-rule-overlay" class="create-det-overlay" onclick="if(event.target===this)closeCreateRule()">
+      <div class="create-det-modal">
+        <div class="create-det-header">
+          <span class="create-det-title">New Suricata Rule</span>
+          <button class="btn btn-sm" onclick="closeCreateRule()">Cancel</button>
+        </div>
+        <div class="create-det-body">
+          <div class="form-group">
+            <label>Message <span style="color:var(--danger)">*</span></label>
+            <input type="text" id="cr-message" placeholder="e.g. Suspicious MySQL auth probe" autocomplete="off">
+          </div>
+          <div class="create-det-row">
+            <div class="form-group" style="margin-bottom:0">
+              <label>Protocol <span style="color:var(--danger)">*</span></label>
+              <select id="cr-protocol" onchange="_crOnProtocolChange()">
+                <option value="tcp">tcp</option>
+                <option value="udp">udp</option>
+                <option value="http">http</option>
+              </select>
+            </div>
+            <div class="form-group" style="margin-bottom:0">
+              <label>Dest Port</label>
+              <input type="text" id="cr-port" placeholder="any" value="any" autocomplete="off">
+            </div>
+          </div>
+          <div class="form-group" id="cr-http-field-group" style="display:none">
+            <label>Match against</label>
+            <select id="cr-http-field">
+              <option value="">generic (whole request)</option>
+              <option value="http.uri">http.uri</option>
+              <option value="http.request_body">http.request_body</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label>Content matches <span style="color:var(--text-muted);font-weight:400">(ANDed together; case-insensitive)</span></label>
+            <div id="cr-contents"></div>
+            <button type="button" class="btn btn-sm" onclick="_crAddContentRow()" style="margin-top:0.4rem">+ Add content match</button>
+          </div>
+          <div class="form-group">
+            <div class="toggle-group">
+              <input type="checkbox" id="cr-threshold-enable" onchange="document.getElementById('cr-threshold-fields').style.display=this.checked?'flex':'none'">
+              <label for="cr-threshold-enable">Only alert after repeated hits (threshold)</label>
+            </div>
+            <div id="cr-threshold-fields" class="create-det-row" style="display:none;margin-top:0.5rem">
+              <div class="form-group" style="margin-bottom:0">
+                <label>Count</label>
+                <input type="text" id="cr-threshold-count" value="3" autocomplete="off">
+              </div>
+              <div class="form-group" style="margin-bottom:0">
+                <label>Within seconds</label>
+                <input type="text" id="cr-threshold-seconds" value="60" autocomplete="off">
+              </div>
+            </div>
+          </div>
+          <div class="form-group">
+            <label>Classtype <span style="color:var(--danger)">*</span></label>
+            <select id="cr-classtype"></select>
+          </div>
+          <p id="cr-error" style="color:var(--danger);font-size:0.79rem;margin-top:0.5rem"></p>
+          <button class="btn btn-primary" onclick="submitRule()">Create Rule</button>
+        </div>
+      </div>
     </div>
 
     <!-- Create Detection Modal -->
@@ -1368,7 +1446,7 @@
       }
       else if (tabId === 'events') loadEvents(true);
       else if (tabId === 'payloads') loadPayloads();
-      else if (tabId === 'detections') loadDetections();
+      else if (tabId === 'detections') { loadDetections(); loadRules(); }
 
       else refresh();
     }
@@ -1669,13 +1747,14 @@
           ? d.query
           : `service:${service}  event_type:${d.event_type}`;
 
+      const detQuery = `service:${service} AND event_type:${d.event_type}`;
       document.getElementById('det-api').textContent =
-`GET /api/search?service=${service}&event_type=${d.event_type}`;
+`GET /api/search?q=${encodeURIComponent(detQuery)}`;
 
       document.getElementById('det-hits').innerHTML = '<span style="color:var(--text-muted);font-size:0.8rem">Loading…</span>';
       document.getElementById('det-modal-overlay').classList.add('open');
 
-      const data = await fetchAPI(`/api/search?service=${service}&event_type=${d.event_type}&limit=5`);
+      const data = await fetchAPI(`/api/search?q=${encodeURIComponent(detQuery)}&limit=5`);
       const rows = data.results;
 
       if (!rows.length) {
@@ -1817,6 +1896,142 @@
       try {
         await fetchAPI(`/api/detections/${id}`, { method: 'DELETE' });
         loadDetections();
+      } catch { /* toast shown by fetchAPI */ }
+    }
+
+    /* ── Suricata rule builder ──────────────────────────────── */
+    let _crClasstypes = [];
+
+    async function loadRules() {
+      const tbody = document.getElementById('rules-table');
+      try {
+        const [rules, meta] = await Promise.all([
+          fetchAPI('/api/rules'),
+          _crClasstypes.length ? Promise.resolve(null) : fetchAPI('/api/rules/classtypes'),
+        ]);
+        if (meta) _crClasstypes = meta.classtypes;
+
+        tbody.innerHTML = rules.map(r => {
+          const contents = JSON.parse(r.contents || '[]');
+          const match = contents.length
+            ? contents.map(c => `<span class="mono" style="font-size:0.72rem">"${esc(c)}"</span>`).join(' + ')
+            : (r.threshold_count ? `${r.threshold_count}/${r.threshold_seconds}s` : '(any)');
+          return `<tr>
+            <td><input type="checkbox" ${r.enabled ? 'checked' : ''} onchange="toggleRule(${r.id}, this.checked)"></td>
+            <td>${esc(r.message)}</td>
+            <td>${esc(r.protocol)}:${esc(r.dest_port)} ${match}</td>
+            <td><span class="mitre-badge">${esc(r.classtype)}</span></td>
+            <td class="mono" style="font-size:0.75rem;color:var(--text-muted)">${r.sid}</td>
+            <td><button class="det-delete-btn" onclick="deleteRule(${r.id})" title="Delete this rule">×</button></td>
+          </tr>`;
+        }).join('') || `<tr><td colspan="6" style="text-align:center;color:var(--text-muted);padding:2rem;font-size:0.82rem">No custom rules yet</td></tr>`;
+      } catch { /* fetchAPI already showed the error toast */ }
+    }
+
+    function _crOnProtocolChange() {
+      const isHttp = document.getElementById('cr-protocol').value === 'http';
+      document.getElementById('cr-http-field-group').style.display = isHttp ? 'block' : 'none';
+    }
+
+    function _crAddContentRow(value = '') {
+      const wrap = document.getElementById('cr-contents');
+      const row = document.createElement('div');
+      row.className = 'create-det-row';
+      row.style.marginBottom = '0.4rem';
+      row.innerHTML =
+        `<input type="text" class="cr-content-input" value="${esc(value)}" placeholder="e.g. bash -i" autocomplete="off" style="flex:1">
+         <button type="button" class="btn btn-sm" onclick="this.parentElement.remove()">Remove</button>`;
+      wrap.appendChild(row);
+    }
+
+    async function openCreateRule() {
+      document.getElementById('cr-message').value = '';
+      document.getElementById('cr-protocol').value = 'tcp';
+      document.getElementById('cr-port').value = 'any';
+      document.getElementById('cr-http-field').value = '';
+      document.getElementById('cr-contents').innerHTML = '';
+      document.getElementById('cr-threshold-enable').checked = false;
+      document.getElementById('cr-threshold-fields').style.display = 'none';
+      document.getElementById('cr-threshold-count').value = '3';
+      document.getElementById('cr-threshold-seconds').value = '60';
+      document.getElementById('cr-error').textContent = '';
+      _crOnProtocolChange();
+      _crAddContentRow();
+
+      if (!_crClasstypes.length) {
+        const meta = await fetchAPI('/api/rules/classtypes');
+        _crClasstypes = meta.classtypes;
+      }
+      document.getElementById('cr-classtype').innerHTML =
+        _crClasstypes.map(c => `<option value="${esc(c)}">${esc(c)}</option>`).join('');
+
+      document.getElementById('create-rule-overlay').classList.add('open');
+      document.getElementById('cr-message').focus();
+    }
+
+    function closeCreateRule() {
+      document.getElementById('create-rule-overlay').classList.remove('open');
+    }
+
+    async function submitRule() {
+      const errEl = document.getElementById('cr-error');
+      errEl.textContent = '';
+
+      const contents = Array.from(document.querySelectorAll('.cr-content-input'))
+        .map(el => el.value)
+        .filter(Boolean);
+
+      const body = {
+        message: document.getElementById('cr-message').value.trim(),
+        protocol: document.getElementById('cr-protocol').value,
+        dest_port: document.getElementById('cr-port').value.trim() || 'any',
+        http_field: document.getElementById('cr-http-field').value,
+        contents,
+        classtype: document.getElementById('cr-classtype').value,
+        threshold: document.getElementById('cr-threshold-enable').checked
+          ? {
+              count: document.getElementById('cr-threshold-count').value,
+              seconds: document.getElementById('cr-threshold-seconds').value,
+            }
+          : null,
+      };
+
+      try {
+        const res = await fetch('/api/rules', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          errEl.textContent = data.error || 'Failed to create rule.';
+          return;
+        }
+        closeCreateRule();
+        loadRules();
+        if (!data.reload_ok) showError(data.reload_message);
+      } catch (err) {
+        errEl.textContent = err.message || 'Failed to create rule.';
+      }
+    }
+
+    async function toggleRule(id, enabled) {
+      try {
+        const data = await fetchAPI(`/api/rules/${id}/toggle`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ enabled }),
+        });
+        if (!data.reload_ok) showError(data.reload_message);
+      } catch { loadRules(); /* revert the checkbox to actual state on failure */ }
+    }
+
+    async function deleteRule(id) {
+      if (!confirm('Delete this Suricata rule?')) return;
+      try {
+        const data = await fetchAPI(`/api/rules/${id}`, { method: 'DELETE' });
+        loadRules();
+        if (!data.reload_ok) showError(data.reload_message);
       } catch { /* toast shown by fetchAPI */ }
     }
 

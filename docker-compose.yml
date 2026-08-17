@@ -32,6 +32,13 @@ services:
       # container would NOT nest the same way (each mount would put suricata's
       # files at the volume's root, not under a "suricata/" subdirectory).
       - ./logs:/app/logs
+      # Rules the dashboard's rule builder writes (rule_builder.py) — see the
+      # matching mount + note on the suricata service below.
+      - ./custom.rules:/app/custom.rules
+      # Suricata's unix-command control socket, so rule_builder.py can issue
+      # "reload-rules" after writing a new rule instead of restarting the
+      # container (which would briefly drop af-packet capture).
+      - ./run/suricata:/app/suricata_run
     restart: unless-stopped
 
   suricata:
@@ -46,9 +53,16 @@ services:
       - ./logs/suricata:/var/log/suricata
       # NOT :ro — jasonish/suricata's entrypoint chowns suricata.yaml on startup
       # and crash-loops if it can't (confirmed: "Read-only file system", container
-      # stuck in Restarting).
+      # stuck in Restarting). Same entrypoint also chowns /var/lib/suricata and
+      # /var/run/suricata recursively on every boot, which is why custom.rules and
+      # the run/ directory below are world-writable (chmod 666 / 777) rather than
+      # precisely UID-matched — Suricata's image controls its own internal UID, not
+      # something this project can pin, and neither path holds anything sensitive
+      # (rule text; a control socket already gated by container/filesystem access).
       - ./suricata.yaml:/etc/suricata/suricata.yaml
       - ./suricata.rules:/var/lib/suricata/rules/suricata.rules
+      - ./custom.rules:/var/lib/suricata/rules/custom.rules
+      - ./run/suricata:/var/run/suricata
     restart: unless-stopped
 
 volumes:

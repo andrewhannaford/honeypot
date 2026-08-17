@@ -118,6 +118,26 @@ def init_db():
             payload TEXT NOT NULL
         )
     """)
+    # Suricata rules created through the dashboard's rule builder — see
+    # rule_builder.py, which renders the enabled ones out to custom.rules and issues a
+    # live Suricata reload.
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS custom_suricata_rules (
+            id                INTEGER PRIMARY KEY AUTOINCREMENT,
+            sid               INTEGER NOT NULL UNIQUE,
+            message           TEXT NOT NULL,
+            protocol          TEXT NOT NULL,
+            dest_port         TEXT NOT NULL,
+            contents          TEXT NOT NULL,
+            http_field        TEXT,
+            classtype         TEXT NOT NULL,
+            threshold_count   INTEGER,
+            threshold_seconds INTEGER,
+            rule_text         TEXT NOT NULL,
+            enabled           INTEGER NOT NULL DEFAULT 1,
+            created_at        TEXT NOT NULL
+        )
+    """)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_events_timestamp ON events(timestamp)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_events_ip ON events(ip)")
     conn.execute(
