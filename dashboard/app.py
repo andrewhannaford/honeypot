@@ -616,6 +616,83 @@ def get_ids_alerts():
     finally:
         conn.close()
 
+
+@app.route("/api/ids-alerts/<int:alert_id>")
+def get_ids_alert_detail(alert_id):
+    conn = _get_db()
+    try:
+        row = conn.execute(
+            "SELECT * FROM suricata_alerts WHERE id = ?", (alert_id,)
+        ).fetchone()
+        if not row:
+            return jsonify({"error": "not found"}), 404
+
+        alert = dict(row)
+        try:
+            alert["raw_parsed"] = json.loads(alert["raw"]) if alert.get("raw") else None
+        except (TypeError, ValueError):
+            alert["raw_parsed"] = None
+        return jsonify(alert)
+    finally:
+        conn.close()
+
+
+@app.route("/api/ip/<ip>")
+def get_ip_profile(ip):
+    """Everything the DB knows about one IP: events, IDS alerts, payloads it
+    triggered, plus a rollup summary. Powers the click-through "IP profile" view."""
+    conn = _get_db()
+    try:
+        summary = conn.execute(
+            "SELECT COUNT(*) as total_events, MIN(timestamp) as first_seen, "
+            "MAX(timestamp) as last_seen, MAX(risk_score) as risk_score, "
+            "MAX(abuse_score) as abuse_score, COUNT(DISTINCT service) as service_count "
+            "FROM events WHERE ip = ?", (ip,)
+        ).fetchone()
+
+        geo = conn.execute(
+            "SELECT country, city, lat, lon FROM events WHERE ip = ? AND country IS NOT NULL "
+            "ORDER BY timestamp DESC LIMIT 1", (ip,)
+        ).fetchone()
+
+        services = conn.execute(
+            "SELECT service, COUNT(*) as count FROM events WHERE ip = ? "
+            "GROUP BY service ORDER BY count DESC", (ip,)
+        ).fetchall()
+
+        events = conn.execute(
+            "SELECT * FROM events WHERE ip = ? ORDER BY timestamp DESC LIMIT 200", (ip,)
+        ).fetchall()
+
+        ids_alerts = conn.execute(
+            "SELECT * FROM suricata_alerts WHERE src_ip = ? ORDER BY timestamp DESC LIMIT 100",
+            (ip,)
+        ).fetchall()
+
+        payloads = conn.execute(
+            "SELECT * FROM payloads WHERE ip = ? ORDER BY timestamp DESC LIMIT 100", (ip,)
+        ).fetchall()
+
+        return jsonify({
+            "ip": ip,
+            "total_events": summary["total_events"],
+            "first_seen": summary["first_seen"],
+            "last_seen": summary["last_seen"],
+            "risk_score": summary["risk_score"],
+            "abuse_score": summary["abuse_score"],
+            "service_count": summary["service_count"],
+            "country": geo["country"] if geo else None,
+            "city": geo["city"] if geo else None,
+            "lat": geo["lat"] if geo else None,
+            "lon": geo["lon"] if geo else None,
+            "services": [dict(r) for r in services],
+            "events": [dict(r) for r in events],
+            "ids_alerts": [dict(r) for r in ids_alerts],
+            "payloads": [dict(r) for r in payloads],
+        })
+    finally:
+        conn.close()
+
 @app.route("/api/timeline")
 def get_timeline():
     conn = _get_db()

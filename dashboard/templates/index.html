@@ -331,7 +331,8 @@
     tbody tr:nth-child(even) td { background: var(--row-stripe); }
     tbody tr:hover td { background: var(--surface-2) !important; }
 
-    .ip   { font-family: "SF Mono", "Fira Code", "Consolas", monospace; color: var(--link-color); font-weight: 600; font-size: 0.8rem; }
+    .ip   { font-family: "SF Mono", "Fira Code", "Consolas", monospace; color: var(--link-color); font-weight: 600; font-size: 0.8rem; cursor: pointer; }
+    .ip:hover { text-decoration: underline; }
     .mono { font-family: "SF Mono", "Fira Code", "Consolas", monospace; }
     .ts   { color: var(--text-muted); white-space: nowrap; font-size: 0.78rem; }
 
@@ -1102,6 +1103,71 @@
       </div>
     </div>
 
+    <!-- IDS Alert Detail Modal -->
+    <div id="ids-alert-modal" class="modal-overlay" onclick="if(event.target===this)closeIdsAlert()" role="dialog" aria-labelledby="ids-alert-title" aria-modal="true">
+      <div class="det-modal">
+        <div class="det-modal-header">
+          <div>
+            <div class="det-modal-title" id="ids-alert-title"></div>
+            <div class="det-modal-sub" id="ids-alert-sub"></div>
+          </div>
+          <button class="btn btn-sm" onclick="closeIdsAlert()">Close</button>
+        </div>
+        <div class="det-modal-section">
+          <h4>Alert</h4>
+          <div class="mitre-row" style="flex-wrap:wrap;gap:1.1rem">
+            <div class="mitre-detail"><span>Category:</span><strong id="ids-alert-category"></strong></div>
+            <div class="mitre-detail"><span>Severity:</span><strong id="ids-alert-severity"></strong></div>
+            <div class="mitre-detail"><span>Protocol:</span><strong id="ids-alert-proto"></strong></div>
+            <div class="mitre-detail"><span>Source:</span><strong id="ids-alert-src"></strong></div>
+            <div class="mitre-detail"><span>Dest Port:</span><strong id="ids-alert-dport"></strong></div>
+            <div class="mitre-detail"><span>Time:</span><strong id="ids-alert-ts"></strong></div>
+          </div>
+          <button class="btn btn-sm btn-primary" style="margin-top:0.9rem" onclick="openIpProfileFromAlert()">View IP Profile</button>
+        </div>
+        <div class="det-modal-section">
+          <h4>Raw Suricata Event</h4>
+          <pre class="code-block" id="ids-alert-raw" style="max-height:40vh;overflow-y:auto"></pre>
+        </div>
+      </div>
+    </div>
+
+    <!-- IP Profile Modal -->
+    <div id="ip-profile-modal" class="modal-overlay" onclick="if(event.target===this)closeIpProfile()" role="dialog" aria-labelledby="ip-profile-title" aria-modal="true">
+      <div class="det-modal" style="max-width:940px">
+        <div class="det-modal-header">
+          <div>
+            <div class="det-modal-title" id="ip-profile-title"></div>
+            <div class="det-modal-sub" id="ip-profile-sub"></div>
+          </div>
+          <button class="btn btn-sm" onclick="closeIpProfile()">Close</button>
+        </div>
+        <div class="det-modal-section">
+          <h4>Summary</h4>
+          <div class="mitre-row" style="flex-wrap:wrap;gap:1.25rem">
+            <div class="mitre-detail"><span>Total Events:</span><strong id="ipp-total"></strong></div>
+            <div class="mitre-detail"><span>Services Touched:</span><strong id="ipp-services"></strong></div>
+            <div class="mitre-detail"><span>First Seen:</span><strong id="ipp-first"></strong></div>
+            <div class="mitre-detail"><span>Last Seen:</span><strong id="ipp-last"></strong></div>
+            <div class="mitre-detail"><span>Risk Score:</span><strong id="ipp-risk"></strong></div>
+            <div class="mitre-detail"><span>AbuseIPDB:</span><strong id="ipp-abuse"></strong></div>
+          </div>
+        </div>
+        <div class="det-modal-section">
+          <h4>Events (<span id="ipp-events-count">0</span>)</h4>
+          <div style="max-height:24vh;overflow-y:auto" id="ipp-events-wrap"></div>
+        </div>
+        <div class="det-modal-section">
+          <h4>IDS Alerts (<span id="ipp-alerts-count">0</span>)</h4>
+          <div style="max-height:24vh;overflow-y:auto" id="ipp-alerts-wrap"></div>
+        </div>
+        <div class="det-modal-section">
+          <h4>Payloads (<span id="ipp-payloads-count">0</span>)</h4>
+          <div style="max-height:24vh;overflow-y:auto" id="ipp-payloads-wrap"></div>
+        </div>
+      </div>
+    </div>
+
     <!-- Detections Tab -->
     <div id="tab-detections" class="tab-content">
       <div class="det-toolbar">
@@ -1380,6 +1446,12 @@
       return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
     }
 
+    /* An IP rendered anywhere in the dashboard opens its activity profile on click. */
+    function ipLink(ip) {
+      if (!ip) return '<span style="color:var(--text-muted)">—</span>';
+      return `<span class="ip" onclick="event.stopPropagation(); openIpProfile('${esc(ip)}')">${esc(ip)}</span>`;
+    }
+
     /* ── Service & event badge helpers ─────────────────────── */
     const SVC_COLORS = {
       SSH:      { bg: 'rgba(139,92,246,0.15)', fg: '#a78bfa', border: 'rgba(139,92,246,0.28)' },
@@ -1477,7 +1549,7 @@
       const highRiskBody = document.getElementById('high-risk-ips');
       highRiskBody.innerHTML = stats.high_risk_ips.map(r => `
         <tr>
-          <td><span class="ip">${esc(r.ip)}</span></td>
+          <td>${ipLink(r.ip)}</td>
           <td>${scoreBadge(r.score)}</td>
           <td>${scoreBadge(r.abuse_score)}</td>
           <td class="mono" style="font-size:0.8rem">${r.count.toLocaleString()}</td>
@@ -1505,7 +1577,7 @@
       document.getElementById('payloads-table').innerHTML = payloads.map(p => `
         <tr>
           <td class="ts">${esc(p.timestamp.substring(5,16).replace('T',' '))}</td>
-          <td><span class="ip">${esc(p.ip)}</span></td>
+          <td>${ipLink(p.ip)}</td>
           <td>${svcBadge(p.service)}</td>
           <td class="mono" style="font-size:0.73rem;color:var(--text)">${esc(p.mime_type) || '<span style="color:var(--text-muted)">—</span>'}</td>
           <td class="mono" style="font-size:0.77rem">${p.file_size != null ? p.file_size.toLocaleString() + ' B' : '<span style="color:var(--text-muted)">—</span>'}</td>
@@ -1528,14 +1600,120 @@
     async function loadIDSAlerts() {
       const alerts = await fetchAPI('/api/ids-alerts');
       document.getElementById('ids-table').innerHTML = alerts.map(a => `
-        <tr>
+        <tr style="cursor:pointer" onclick="openIdsAlert(${a.id})" role="button" tabindex="0">
           <td class="ts">${esc(a.timestamp.substring(11, 19))}</td>
-          <td><span class="ip">${esc(a.src_ip)}</span></td>
+          <td>${ipLink(a.src_ip)}</td>
           <td style="color:var(--text-mid)">${esc(a.alert_sig)}</td>
           <td><span class="mono" style="font-size:0.77rem">${esc(a.proto)}</span></td>
           <td><span class="score-badge ${a.severity <= 1 ? 'score-high' : 'score-med'}">Sev ${a.severity}</span></td>
         </tr>
       `).join('') || `<tr><td colspan="5" style="text-align:center;color:var(--text-muted);padding:2.5rem;font-size:0.82rem">No IDS alerts</td></tr>`;
+    }
+
+    /* ── IDS Alert Detail Modal ─────────────────────────────── */
+    let _currentIdsAlertSrcIp = null;
+
+    async function openIdsAlert(alertId) {
+      const a = await fetchAPI(`/api/ids-alerts/${alertId}`);
+      if (!a || a.error) return;
+
+      _currentIdsAlertSrcIp = a.src_ip;
+      document.getElementById('ids-alert-title').textContent = a.alert_sig || 'Suricata Alert';
+      document.getElementById('ids-alert-sub').textContent = `Alert #${a.id}`;
+      document.getElementById('ids-alert-category').textContent = a.category || '—';
+      document.getElementById('ids-alert-severity').textContent = a.severity != null ? `Sev ${a.severity}` : '—';
+      document.getElementById('ids-alert-proto').textContent = a.proto || '—';
+      document.getElementById('ids-alert-src').textContent = a.src_port != null ? `${a.src_ip}:${a.src_port}` : (a.src_ip || '—');
+      document.getElementById('ids-alert-dport').textContent = a.dst_port != null ? a.dst_port : '—';
+      document.getElementById('ids-alert-ts').textContent = a.timestamp || '—';
+      document.getElementById('ids-alert-raw').textContent =
+        a.raw_parsed ? JSON.stringify(a.raw_parsed, null, 2) : (a.raw || '(no raw event captured)');
+
+      document.getElementById('ids-alert-modal').classList.add('open');
+    }
+
+    function closeIdsAlert() {
+      document.getElementById('ids-alert-modal').classList.remove('open');
+    }
+
+    function openIpProfileFromAlert() {
+      if (!_currentIdsAlertSrcIp) return;
+      closeIdsAlert();
+      openIpProfile(_currentIdsAlertSrcIp);
+    }
+
+    /* ── IP Profile Modal ───────────────────────────────────── */
+    function _ipProfileEventsTable(events) {
+      if (!events.length) return '<span style="color:var(--text-muted);font-size:0.8rem">No events.</span>';
+      return `<table class="det-hits-table">
+        <thead><tr><th>Time</th><th>Service</th><th>Event</th><th>Risk</th></tr></thead>
+        <tbody>${events.map(e => `
+          <tr>
+            <td style="white-space:nowrap;color:var(--text-muted)">${esc((e.timestamp || '').substring(5,16).replace('T',' '))}</td>
+            <td>${svcBadge(e.service)}</td>
+            <td>${evtBadge(e.event_type)}</td>
+            <td>${scoreBadge(e.risk_score)}</td>
+          </tr>`).join('')}</tbody>
+      </table>`;
+    }
+
+    function _ipProfileAlertsTable(alerts) {
+      if (!alerts.length) return '<span style="color:var(--text-muted);font-size:0.8rem">No IDS alerts.</span>';
+      return `<table class="det-hits-table">
+        <thead><tr><th>Time</th><th>Alert</th><th>Protocol</th><th>Severity</th></tr></thead>
+        <tbody>${alerts.map(a => `
+          <tr style="cursor:pointer" onclick="closeIpProfile();openIdsAlert(${a.id})">
+            <td style="white-space:nowrap;color:var(--text-muted)">${esc((a.timestamp || '').substring(5,16).replace('T',' '))}</td>
+            <td style="color:var(--text-mid)">${esc(a.alert_sig)}</td>
+            <td class="mono" style="font-size:0.74rem">${esc(a.proto)}</td>
+            <td><span class="score-badge ${a.severity <= 1 ? 'score-high' : 'score-med'}">Sev ${a.severity}</span></td>
+          </tr>`).join('')}</tbody>
+      </table>`;
+    }
+
+    function _ipProfilePayloadsTable(payloads) {
+      if (!payloads.length) return '<span style="color:var(--text-muted);font-size:0.8rem">No payloads.</span>';
+      return `<table class="det-hits-table">
+        <thead><tr><th>Time</th><th>Service</th><th>MIME</th><th>VT</th></tr></thead>
+        <tbody>${payloads.map(p => `
+          <tr style="cursor:pointer" onclick="closeIpProfile();viewPayload(${p.id}, '${esc(p.service)} · ${esc(p.ip)}')">
+            <td style="white-space:nowrap;color:var(--text-muted)">${esc((p.timestamp || '').substring(5,16).replace('T',' '))}</td>
+            <td>${svcBadge(p.service)}</td>
+            <td class="mono" style="font-size:0.74rem">${esc(p.mime_type) || '—'}</td>
+            <td>${vtBadge(p.vt_score)}</td>
+          </tr>`).join('')}</tbody>
+      </table>`;
+    }
+
+    async function openIpProfile(ip) {
+      const p = await fetchAPI(`/api/ip/${encodeURIComponent(ip)}`);
+      if (!p || p.error) return;
+
+      document.getElementById('ip-profile-title').textContent = p.ip;
+      document.getElementById('ip-profile-sub').textContent =
+        [p.city, p.country].filter(Boolean).join(', ') || 'Location unknown';
+
+      document.getElementById('ipp-total').textContent = (p.total_events || 0).toLocaleString();
+      document.getElementById('ipp-services').textContent =
+        p.services.length ? p.services.map(s => s.service).join(', ') : '—';
+      document.getElementById('ipp-first').textContent = p.first_seen || '—';
+      document.getElementById('ipp-last').textContent = p.last_seen || '—';
+      document.getElementById('ipp-risk').innerHTML = scoreBadge(p.risk_score);
+      document.getElementById('ipp-abuse').innerHTML = scoreBadge(p.abuse_score);
+
+      document.getElementById('ipp-events-count').textContent = p.events.length;
+      document.getElementById('ipp-alerts-count').textContent = p.ids_alerts.length;
+      document.getElementById('ipp-payloads-count').textContent = p.payloads.length;
+
+      document.getElementById('ipp-events-wrap').innerHTML = _ipProfileEventsTable(p.events);
+      document.getElementById('ipp-alerts-wrap').innerHTML = _ipProfileAlertsTable(p.ids_alerts);
+      document.getElementById('ipp-payloads-wrap').innerHTML = _ipProfilePayloadsTable(p.payloads);
+
+      document.getElementById('ip-profile-modal').classList.add('open');
+    }
+
+    function closeIpProfile() {
+      document.getElementById('ip-profile-modal').classList.remove('open');
     }
 
     /* ── Quick filter ───────────────────────────────────────── */
@@ -1646,7 +1824,7 @@
         const rowId = 'evrow-' + e.id;
         return `<tr id="${rowId}" class="expandable-row" data-payload="${esc(prettyData)}" onclick="toggleEventRow('${rowId}')" role="button" tabindex="0">
           <td class="ts">${esc(e.timestamp.substring(5,16).replace('T',' '))}</td>
-          <td><span class="ip">${esc(e.ip)}</span></td>
+          <td>${ipLink(e.ip)}</td>
           <td style="font-size:0.75rem;color:var(--text-muted)">${esc(e.country) || '—'}</td>
           <td>${svcBadge(e.service)}</td>
           <td>${evtBadge(e.event_type)}</td>
@@ -1777,7 +1955,7 @@
             } catch { preview = e.data ? esc(e.data.substring(0, 100)) : '—'; }
             return `<tr>
               <td style="white-space:nowrap;color:var(--text-muted)">${esc(e.timestamp.substring(5,16).replace('T',' '))}</td>
-              <td><span class="ip">${esc(e.ip)}</span></td>
+              <td>${ipLink(e.ip)}</td>
               <td style="color:var(--text-muted)">${esc(e.country) || '—'}</td>
               <td class="mono" style="font-size:0.74rem;max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(e.data)}">${preview}</td>
             </tr>`;
@@ -2199,7 +2377,7 @@
         events.results.reverse().forEach(o => {
           const row = document.createElement('div');
           row.className = 'sse-row';
-          row.innerHTML = `<span class="ip" style="color:var(--link-color)">${esc(o.ip)}</span> → ${esc(o.service)} (${esc(o.country) || 'Unknown'}) ${scoreBadge(o.risk_score)}`;
+          row.innerHTML = `${ipLink(o.ip)} → ${esc(o.service)} (${esc(o.country) || 'Unknown'}) ${scoreBadge(o.risk_score)}`;
           sseFeed.prepend(row);
           if (o.lat && o.lon) {
             plotAttack(o.lat, o.lon, _serverCoords.lat, _serverCoords.lon, o.risk_score || 0, false);
@@ -2222,7 +2400,7 @@
 
       const row = document.createElement('div');
       row.className = 'sse-row';
-      row.innerHTML = `<span class="ip" style="color:var(--link-color)">${esc(o.ip)}</span> → ${esc(o.service)} (${esc(o.country) || 'Unknown'}) ${scoreBadge(o.risk_score)}`;
+      row.innerHTML = `${ipLink(o.ip)} → ${esc(o.service)} (${esc(o.country) || 'Unknown'}) ${scoreBadge(o.risk_score)}`;
       sseFeed.prepend(row);
       if (sseFeed.children.length > 50) sseFeed.removeChild(sseFeed.lastChild);
     };
