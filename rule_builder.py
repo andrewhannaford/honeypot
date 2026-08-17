@@ -235,8 +235,18 @@ def delete_rule(rule_id):
 
 
 def regenerate_custom_rules_file(conn):
-    """Writes every *enabled* rule out to CUSTOM_RULES_PATH, atomically (write to a
-    temp file then rename) so Suricata never reads a half-written file mid-write."""
+    """Writes every *enabled* rule out to CUSTOM_RULES_PATH.
+
+    Writes in place rather than write-temp-then-os.replace(): CUSTOM_RULES_PATH is a
+    Docker bind-mounted *file*, shared into both the honeypot and suricata containers,
+    and a bind mount is tied to a specific inode. os.replace() can't retarget that
+    inode — it fails with "OSError: [Errno 16] Device or resource busy" (confirmed
+    live). An in-place write loses true atomicity, but the exposure is negligible: this
+    only runs when a rule is added/toggled/deleted via the UI (not per-event), the file
+    is a handful of short lines, and Suricata's rule loader just skips/logs a malformed
+    line rather than crashing, so a reload racing a write mid-line self-corrects on the
+    next reload.
+    """
     rows = conn.execute(
         "SELECT rule_text FROM custom_suricata_rules WHERE enabled = 1 ORDER BY id"
     ).fetchall()
@@ -250,10 +260,10 @@ def regenerate_custom_rules_file(conn):
     lines.extend(r[0] for r in rows)
     content = "\n".join(lines) + "\n"
 
-    tmp_path = CUSTOM_RULES_PATH + ".tmp"
-    with open(tmp_path, "w") as f:
+    with open(CUSTOM_RULES_PATH, "w") as f:
         f.write(content)
-    os.replace(tmp_path, CUSTOM_RULES_PATH)
+        f.flush()
+        os.fsync(f.fileno())
 
 
 def reload_suricata(timeout=10):
