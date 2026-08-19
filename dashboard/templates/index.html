@@ -38,6 +38,8 @@
 
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
+    html { overflow-x: hidden; }
+
     body {
       font-family: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", sans-serif;
       background: var(--bg);
@@ -46,6 +48,7 @@
       display: flex;
       font-size: 14px;
       line-height: 1.5;
+      overflow-x: hidden;
     }
 
     /* ── Sidebar ─────────────────────────────────────────── */
@@ -62,6 +65,9 @@
     }
 
     @media (max-width: 768px) {
+      body {
+        flex-direction: column;
+      }
       aside {
         transform: translateX(-100%);
       }
@@ -180,7 +186,10 @@
     }
     @media (max-width: 768px) {
       .mobile-header { display: flex; }
-      .page-header { margin-top: 1rem; }
+      .page-header { margin-top: 1rem; flex-wrap: wrap; }
+      main { padding: 1.25rem 1rem; }
+      .siem-query-hint { display: none; }
+      .filter-row input[type="text"] { width: 100%; }
     }
     .mobile-toggle {
       display: none;
@@ -297,11 +306,13 @@
     }
     .panel-body { padding: 0.875rem 1.125rem; }
 
-    .table-container { max-height: 500px; overflow-y: auto; scrollbar-width: thin; -webkit-overflow-scrolling: touch; }
-    /* Full length tables for main data tabs */
+    .table-container { max-height: 500px; overflow-y: auto; overflow-x: auto; scrollbar-width: thin; -webkit-overflow-scrolling: touch; }
+    /* Full length tables for main data tabs — unconstrained vertically, but still
+       scroll horizontally within their own box instead of blowing out the page width
+       (the columns don't fit a phone screen). */
     #tab-events .table-container,
     #tab-ids .table-container,
-    #tab-payloads .table-container { max-height: none; overflow: visible; }
+    #tab-payloads .table-container { max-height: none; overflow-y: visible; overflow-x: auto; }
 
     /* ── Tables ──────────────────────────────────────────── */
     table { width: 100%; border-collapse: collapse; font-size: 0.81rem; }
@@ -572,6 +583,7 @@
     }
     .siem-query-input {
       flex: 1;
+      min-width: 0;
       background: transparent;
       border: none;
       outline: none;
