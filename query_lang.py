@@ -39,6 +39,8 @@ _FIELDS = {
     "port": ("port", "num"),
     "risk_score": ("risk_score", "num"),
     "abuse_score": ("abuse_score", "num"),
+    "connection_id": ("connection_id", "str"),
+    "reviewed": ("reviewed", "num"),
 }
 
 _TOKEN_RE = re.compile(r"""

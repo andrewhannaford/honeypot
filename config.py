@@ -66,6 +66,7 @@ DB_PATH = "data/honeypot.db"
 # socket it uses to live-reload them — both bind-mounted paths shared with the
 # suricata container (see docker-compose.yml). See rule_builder.py.
 CUSTOM_RULES_PATH = "custom.rules"
+SURICATA_RULES_PATH = "suricata.rules"
 SURICATA_SOCKET_PATH = "suricata_run/suricata-command.socket"
 
 # The Discord webhook URL deliberately does not live here.
@@ -84,11 +85,17 @@ ALERT_OUTBOX_MAX = _positive_int("ALERT_OUTBOX_MAX", 5000)
 # refuse every request (fail closed).
 OUTBOX_TOKEN = os.environ.get("OUTBOX_TOKEN", "")
 
+# Push-notify target for the sandbox fetcher (separate container, sandbox/config.py
+# has the matching constants and the full rationale). A single UDP datagram sent
+# here from logger.py the instant a URL-bearing event is captured lets the fetcher
+# grab it immediately instead of waiting for its next scheduled poll. Loopback-only
+# and best-effort: both containers share the host's network (network_mode: host),
+# and a lost/ignored datagram just forgoes the latency shortcut, never a capture.
+SANDBOX_NOTIFY_HOST = "127.0.0.1"
+SANDBOX_NOTIFY_PORT = int(os.environ.get("SANDBOX_NOTIFY_PORT", "8091"))
+
 # AbuseIPDB API key — set via environment variable
 ABUSEIPDB_API_KEY = os.environ.get("ABUSEIPDB_API_KEY", "")
-
-# VirusTotal API key for payload analysis
-VIRUSTOTAL_API_KEY = os.environ.get("VIRUSTOTAL_API_KEY", "")
 
 # Alert toggles (env: 1/true vs 0/false/no/off)
 ALERT_ON_CONNECT = _env_bool("ALERT_ON_CONNECT", True)

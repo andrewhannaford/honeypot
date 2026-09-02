@@ -9,8 +9,22 @@ import time
 
 class TestThreatIntel(unittest.TestCase):
     def setUp(self):
+        # Windows enforces exclusive file locks more strictly than the Linux
+        # containers this actually deploys to — a prior test's sqlite
+        # connection can still be mid-teardown (GC hasn't released the
+        # handle yet) when this file happens to run right after it in the
+        # same pytest session, causing a transient PermissionError here.
+        # Retry briefly rather than failing outright on what's a timing
+        # artifact, not a real bug.
         if os.path.exists(DB_PATH):
-            os.remove(DB_PATH)
+            for attempt in range(5):
+                try:
+                    os.remove(DB_PATH)
+                    break
+                except PermissionError:
+                    if attempt == 4:
+                        raise
+                    time.sleep(0.1)
         init_db()
         self.mock_event = {
             "rowid": 1,

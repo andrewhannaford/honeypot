@@ -123,8 +123,11 @@ class TestTelnetIACParser(unittest.TestCase):
         server, client = self._make_pair()
         client.sendall(data)
         client.close()
-        # Disable echo for test to avoid sendall blocking on pair
-        result = _telnet_recv_line(server, echo=False)
+        # send_fn is a no-op: _recv_line now takes it as an explicit callback
+        # (routed through session_recorder.py in production) rather than
+        # calling sock.sendall directly, so there's no longer any blocking
+        # risk on the socketpair regardless of echo.
+        result = _telnet_recv_line(server, lambda s: None, echo=False)
         server.close()
         return result
 
@@ -166,7 +169,7 @@ class TestTelnetIACParser(unittest.TestCase):
     def test_returns_none_on_closed_socket(self):
         server, client = self._make_pair()
         client.close()
-        result = _telnet_recv_line(server)
+        result = _telnet_recv_line(server, lambda s: None)
         server.close()
         self.assertIsNone(result)
 
@@ -459,7 +462,14 @@ class TestFTPService(unittest.TestCase):
     def test_captures_credentials(self):
         logged = []
 
-        def fake_log(ip, port, service, event_type, data=None):
+        def fake_log(ip, port, service, event_type, data=None, connection_id=None):
+            # Both FTP's and Telnet's credential log_event calls now pass
+            # connection_id as a kwarg (session-grouping, added after this
+            # test) — a stub missing it raised TypeError *inside* the
+            # connection-handling thread, which _handle_client's own
+            # try/except then turned into an abrupt connection abort on the
+            # client side (ConnectionAbortedError), not a clean assertion
+            # failure.
             logged.append({"event_type": event_type, "data": data})
             return {}
 
@@ -514,7 +524,14 @@ class TestTelnetService(unittest.TestCase):
     def test_captures_credentials(self):
         logged = []
 
-        def fake_log(ip, port, service, event_type, data=None):
+        def fake_log(ip, port, service, event_type, data=None, connection_id=None):
+            # Both FTP's and Telnet's credential log_event calls now pass
+            # connection_id as a kwarg (session-grouping, added after this
+            # test) — a stub missing it raised TypeError *inside* the
+            # connection-handling thread, which _handle_client's own
+            # try/except then turned into an abrupt connection abort on the
+            # client side (ConnectionAbortedError), not a clean assertion
+            # failure.
             logged.append({"event_type": event_type, "data": data})
             return {}
 
@@ -604,7 +621,9 @@ class TestDashboard(unittest.TestCase):
         self.assertEqual(resp.status_code, 200)
 
     def test_api_events_returns_200(self):
-        resp = self._client.get("/api/events")
+        # /api/events predates the query_lang.py rewrite that replaced it
+        # with /api/search (empty q = no filter, same as the old bare route).
+        resp = self._client.get("/api/search")
         self.assertEqual(resp.status_code, 200)
 
     def test_api_stats_returns_200(self):
@@ -612,11 +631,11 @@ class TestDashboard(unittest.TestCase):
         self.assertEqual(resp.status_code, 200)
 
     def test_api_events_returns_list(self):
-        resp = self._client.get("/api/events")
+        resp = self._client.get("/api/search")
         self.assertEqual(resp.status_code, 200)
         data = json.loads(resp.data)
-        self.assertIsInstance(data, list)
-        self.assertEqual(len(data), 2)
+        self.assertIsInstance(data["results"], list)
+        self.assertEqual(len(data["results"]), 2)
 
     def test_api_stats_structure(self):
         resp = self._client.get("/api/stats")
@@ -632,16 +651,16 @@ class TestDashboard(unittest.TestCase):
 
     def test_api_events_no_auth_header_required(self):
         """Phase 0: dashboard is intentionally unauthenticated."""
-        for path in ("/api/events", "/api/stats"):
+        for path in ("/api/search", "/api/stats"):
             resp = self._client.get(path, headers={})
             self.assertEqual(resp.status_code, 200, msg=path)
 
     def test_api_events_returns_json_list(self):
-        resp = self._client.get("/api/events")
+        resp = self._client.get("/api/search")
         self.assertEqual(resp.headers.get("Content-Type", "").split(";")[0], "application/json")
         data = json.loads(resp.data)
-        self.assertIsInstance(data, list)
-        self.assertTrue(all(isinstance(x, dict) for x in data))
+        self.assertIsInstance(data["results"], list)
+        self.assertTrue(all(isinstance(x, dict) for x in data["results"]))
 
     def test_unknown_api_route_404(self):
         resp = self._client.get("/api/does-not-exist")

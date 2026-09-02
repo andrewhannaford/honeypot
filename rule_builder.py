@@ -62,6 +62,14 @@ def validate_fields(fields):
         raise RuleError("message is required")
     if '"' in message:
         raise RuleError('message cannot contain a literal " character')
+    if any(c in message for c in "\r\n"):
+        # Suricata's rule format is line-based — an embedded newline splits
+        # one logical rule across two physical lines. The parser then treats
+        # the second half as its own (malformed) line and silently drops it,
+        # while reload_suricata() only checks that the reload command itself
+        # succeeded, not that every line parsed — so a crafted submission
+        # could vanish from the active ruleset while the UI reports success.
+        raise RuleError("message cannot contain a newline")
     out["message"] = message
 
     protocol = (out.get("protocol") or "").strip().lower()
@@ -83,6 +91,11 @@ def validate_fields(fields):
         raise RuleError("http_field only applies when protocol is 'http'")
     out["http_field"] = http_field
 
+    out["mitre_tactic"] = (out.get("mitre_tactic") or "").strip()
+    out["mitre_technique"] = (out.get("mitre_technique") or "").strip()
+    out["mitre_technique_name"] = (out.get("mitre_technique_name") or "").strip()
+    out["mitre_url"] = (out.get("mitre_url") or "").strip()
+
     contents = out.get("contents") or []
     if not isinstance(contents, list):
         raise RuleError("contents must be a list of strings")
@@ -90,6 +103,8 @@ def validate_fields(fields):
     for c in contents:
         if '"' in c:
             raise RuleError(f'content match cannot contain a literal " character: {c!r}')
+        if any(ch in c for ch in "\r\n"):
+            raise RuleError(f'content match cannot contain a newline: {c!r}')
     out["contents"] = contents
 
     threshold = out.get("threshold") or None
@@ -141,6 +156,19 @@ def build_rule_text(sid, fields):
         # hand-authored port-scan rules, just for HTTP transactions specifically.
         options.append("flags:S")
 
+    if contents:
+        # Scope content-match rules to client->server traffic only. Without this,
+        # a generic content match (e.g. a literal string an attacker might type into
+        # a trap) can also match the *response* side of unrelated connections — this
+        # bit the hand-authored "bash -i" rule for real: the honeypot dashboard's own
+        # HTTP responses to docker-svc echo back captured attacker payload text
+        # (that's the whole point of the dashboard), so a direction-less rule alerts
+        # on the dashboard looking at its own data. http_field rules are exempt: the
+        # http.uri/http.request_body sticky buffers only ever exist on requests, so
+        # they can't hit response traffic in the first place.
+        if not http_field:
+            options.append("flow:to_server")
+
     for c in contents:
         if http_field:
             options.append(f'{http_field}; content:"{c}"; nocase')
@@ -177,14 +205,17 @@ def create_rule(fields):
         cur = conn.execute(
             """INSERT INTO custom_suricata_rules
                (sid, message, protocol, dest_port, contents, http_field, classtype,
-                threshold_count, threshold_seconds, rule_text, enabled, created_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, datetime('now'))""",
+                threshold_count, threshold_seconds, rule_text, enabled, created_at,
+                mitre_tactic, mitre_technique, mitre_technique_name, mitre_url)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, datetime('now'), ?, ?, ?, ?)""",
             (
                 sid, normalized["message"], normalized["protocol"], normalized["dest_port"],
                 json.dumps(normalized["contents"]), normalized["http_field"], normalized["classtype"],
                 (normalized["threshold"] or {}).get("count"),
                 (normalized["threshold"] or {}).get("seconds"),
                 rule_text,
+                normalized["mitre_tactic"] or None, normalized["mitre_technique"] or None,
+                normalized["mitre_technique_name"] or None, normalized["mitre_url"] or None,
             ),
         )
         conn.commit()

@@ -2,6 +2,7 @@ import socket
 import struct
 import threading
 import time
+import uuid
 import ratelimit
 from logger import log_event
 from alerts.discord import send_alert
@@ -47,8 +48,9 @@ def _error(message, username):
 
 def _handle_client(client_sock, client_addr):
     client_ip = client_addr[0]
+    connection_id = uuid.uuid4().hex
     try:
-        log_event(client_ip, POSTGRES_PORT, "POSTGRES", "connect")
+        log_event(client_ip, POSTGRES_PORT, "POSTGRES", "connect", connection_id=connection_id)
         send_alert("POSTGRES", client_ip, "New connection", alert_type="connect")
 
         client_sock.settimeout(30)
@@ -86,7 +88,8 @@ def _handle_client(client_sock, client_addr):
                     password = raw.rstrip(b"\x00").decode("utf-8", errors="replace")
 
         log_event(client_ip, POSTGRES_PORT, "POSTGRES", "credential",
-                  {"username": username, "password": password, "database": database})
+                  {"username": username, "password": password, "database": database},
+                  connection_id=connection_id)
         send_alert("POSTGRES", client_ip,
                    f"Login attempt: `{username}` / `{password}` (db: `{database}`)",
                    alert_type="credential")

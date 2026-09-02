@@ -4,8 +4,11 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Honeypot OS · Dashboard</title>
+  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg" />
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <link rel="stylesheet" href="/static/asciinema-player.css" />
+  <script src="/static/asciinema-player.min.js"></script>
   <style>
     :root {
       --bg:           #070d17;
@@ -248,28 +251,46 @@
       gap: 0.875rem;
       margin-bottom: 1.375rem;
     }
+    /* Icon+label sit in their own header row above the value, rather than
+       beside it, so the value gets the card's full width instead of sharing
+       it with a 38px icon. The side-by-side version let a real live count
+       grow past 6 digits ("344,168") and wrap mid-number ("344,1" / "68") —
+       min-width:0 alone (the first fix tried here) stopped it overflowing
+       the card, but wrapping a number in the middle of a digit group looks
+       just as broken as clipping it. white-space:nowrap on .stat-value is
+       what actually prevents that now; the extra width from dropping the
+       icon out of that row is what keeps nowrap from just overflowing again. */
     .stat-card {
       background: var(--surface);
       border: 1px solid var(--border);
       border-radius: 10px;
       padding: 1.125rem 1.25rem;
       display: flex;
-      align-items: flex-start;
-      gap: 0.875rem;
+      flex-direction: column;
+      gap: 0.6rem;
       transition: border-color 0.2s;
+      min-width: 0;
     }
     .stat-card:hover { border-color: var(--border-light); }
+    .stat-card-head { display: flex; align-items: center; gap: 0.65rem; min-width: 0; }
     .stat-icon-well {
-      width: 38px; height: 38px;
+      width: 32px; height: 32px;
       border-radius: 8px;
       display: flex;
       align-items: center;
       justify-content: center;
       flex-shrink: 0;
     }
-    .stat-icon-well svg { width: 18px; height: 18px; }
-    .stat-label { font-size: 0.68rem; color: var(--text); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 0.3rem; font-weight: 600; }
-    .stat-value { font-size: 1.85rem; font-weight: 700; color: var(--text-bright); line-height: 1; }
+    .stat-icon-well svg { width: 16px; height: 16px; }
+    .stat-label {
+      font-size: 0.68rem; color: var(--text); text-transform: uppercase;
+      letter-spacing: 0.05em; font-weight: 600;
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    .stat-value {
+      font-size: 1.85rem; font-weight: 700; color: var(--text-bright); line-height: 1;
+      white-space: nowrap;
+    }
     .stat-value-sm { font-size: 1.1rem; }
 
     /* ── Dashboard Grid ──────────────────────────────────── */
@@ -279,6 +300,25 @@
       gap: 1.125rem;
     }
     @media (max-width: 1200px) { .dashboard-grid { grid-template-columns: 1fr; } }
+
+    /* ── Timeline chart (hand-rolled, no charting lib for one sparkline) ── */
+    .tl-chart { position: relative; height: 110px; margin: 0.5rem 0.25rem 0; }
+    .tl-bar {
+      position: absolute; bottom: 0;
+      background: var(--accent-light, #4e96e8);
+      border-radius: 3px 3px 0 0;
+      opacity: 0.85;
+      transition: opacity 0.15s;
+    }
+    .tl-bar:hover { opacity: 1; }
+    .tl-labels { display: flex; justify-content: space-between; margin: 0.35rem 0.25rem 0; font-size: 0.65rem; color: var(--text-muted); }
+
+    /* ── Geo stats bars ── */
+    .geo-row { display: flex; align-items: center; gap: 0.6rem; padding: 0.32rem 0; font-size: 0.78rem; }
+    .geo-country { width: 32%; color: var(--text-mid); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .geo-bar-track { flex: 1; height: 7px; background: var(--surface-2); border-radius: 4px; overflow: hidden; }
+    .geo-bar-fill { height: 100%; background: var(--accent-light, #4e96e8); border-radius: 4px; }
+    .geo-count { width: 3.5rem; text-align: right; color: var(--text-muted); font-family: var(--mono, monospace); font-size: 0.72rem; }
 
     /* ── Panels ──────────────────────────────────────────── */
     .panel {
@@ -341,6 +381,166 @@
     tbody tr { transition: background 0.1s; }
     tbody tr:nth-child(even) td { background: var(--row-stripe); }
     tbody tr:hover td { background: var(--surface-2) !important; }
+
+    /* ── Numeric / badge / checkbox column centering ──────────
+       th/td default to text-align:left (the table baseline above never sets
+       it), which is correct for names/URLs/free text but reads as visibly
+       off-center for short badges, counts, and checkboxes — most noticeable
+       on narrow viewports where columns are already tight. Scoped by each
+       table's tbody id via :has() so both the static <th> and the JS-
+       rendered <td>s in that column stay in sync from one rule, without
+       touching the ~15 row-template functions individually. */
+    table:has(> tbody#high-risk-ips) th:nth-child(n+2),
+    table:has(> tbody#high-risk-ips) td:nth-child(n+2),
+    table:has(> tbody#events-table) th:nth-child(3),
+    table:has(> tbody#events-table) td:nth-child(3),
+    table:has(> tbody#events-table) th:nth-child(4),
+    table:has(> tbody#events-table) td:nth-child(4),
+    table:has(> tbody#events-table) th:nth-child(5),
+    table:has(> tbody#events-table) td:nth-child(5),
+    table:has(> tbody#events-table) th:nth-child(7),
+    table:has(> tbody#events-table) td:nth-child(7),
+    table:has(> tbody#events-table) th:nth-child(8),
+    table:has(> tbody#events-table) td:nth-child(8),
+    table:has(> tbody#ids-table) th:nth-child(4),
+    table:has(> tbody#ids-table) td:nth-child(4),
+    table:has(> tbody#ids-table) th:nth-child(5),
+    table:has(> tbody#ids-table) td:nth-child(5),
+    table:has(> tbody#ids-table) th:nth-child(6),
+    table:has(> tbody#ids-table) td:nth-child(6),
+    table:has(> tbody#ids-table) th:nth-child(7),
+    table:has(> tbody#ids-table) td:nth-child(7),
+    table:has(> tbody#rules-table) th:nth-child(1),
+    table:has(> tbody#rules-table) td:nth-child(1),
+    table:has(> tbody#rules-table) th:nth-child(4),
+    table:has(> tbody#rules-table) td:nth-child(4),
+    table:has(> tbody#rules-table) th:nth-child(5),
+    table:has(> tbody#rules-table) td:nth-child(5),
+    table:has(> tbody#rules-table) th:nth-child(6),
+    table:has(> tbody#rules-table) td:nth-child(6),
+    table:has(> tbody#sandbox-table) th:nth-child(n+3):nth-child(-n+6),
+    table:has(> tbody#sandbox-table) td:nth-child(n+3):nth-child(-n+6),
+    table:has(> tbody#sandbox-attempts-table) th:nth-child(3),
+    table:has(> tbody#sandbox-attempts-table) td:nth-child(3),
+    table:has(> tbody#sessions-table) th:nth-child(2),
+    table:has(> tbody#sessions-table) td:nth-child(2),
+    table:has(> tbody#sessions-table) th:nth-child(5),
+    table:has(> tbody#sessions-table) td:nth-child(5),
+    table:has(> tbody#sessions-table) th:nth-child(6),
+    table:has(> tbody#sessions-table) td:nth-child(6),
+    table:has(> tbody#redis-sessions-table) th:nth-child(3),
+    table:has(> tbody#redis-sessions-table) td:nth-child(3),
+    table:has(> tbody#smtp-sessions-table) th:nth-child(3),
+    table:has(> tbody#smtp-sessions-table) td:nth-child(3),
+    table:has(> tbody#ftp-sessions-table) th:nth-child(3),
+    table:has(> tbody#ftp-sessions-table) td:nth-child(3),
+    table:has(> tbody#mysql-sessions-table) th:nth-child(3),
+    table:has(> tbody#mysql-sessions-table) td:nth-child(3),
+    table:has(> tbody#postgres-sessions-table) th:nth-child(3),
+    table:has(> tbody#postgres-sessions-table) td:nth-child(3),
+    table:has(> tbody#payloads-table) th:nth-child(3),
+    table:has(> tbody#payloads-table) td:nth-child(3),
+    table:has(> tbody#payloads-table) th:nth-child(5),
+    table:has(> tbody#payloads-table) td:nth-child(5) {
+      text-align: center;
+    }
+
+    /* Default browser checkboxes render ~13px — comfortably clickable with a
+       mouse, well under the ~44px touch-target guideline on a phone. Sized up
+       and given a bit of padding on the cell so the tap area isn't just the
+       glyph itself. */
+    td input[type="checkbox"] { width: 18px; height: 18px; cursor: pointer; }
+    td:has(> input[type="checkbox"]) { padding-top: 0.5rem; padding-bottom: 0.5rem; }
+
+    /* ── Mobile: tables become cards ─────────────────────────
+       A horizontally-scrolling multi-column table is a bad mobile pattern
+       regardless of how well individual cells are tuned — confirmed the
+       hard way against a real screenshot. Below this breakpoint every data
+       table (every .table-container table, plus the 4 .det-hits-table
+       instances in the IP-profile/detection-detail modals) becomes a stack
+       of bordered "cards", one per row, with each cell rendered as a
+       label:value line instead of a table column. The label comes from
+       data-label on the <td>, which _applyRowLabels() below sets
+       automatically from the table's own <thead> text — action columns and
+       the 4 det-hits-table instances that don't run through that function
+       set it inline in their templates instead.
+       !important is necessary in several places here specifically to
+       defeat desktop-mode inline styles already on these cells
+       (white-space:nowrap, max-width+ellipsis, the flex-based action
+       columns) that would otherwise keep winning over this media query. */
+    @media (max-width: 768px) {
+      .table-container table,
+      .det-hits-table {
+        display: block;
+      }
+      .table-container table thead,
+      .det-hits-table thead {
+        display: none;
+      }
+      .table-container table tbody,
+      .table-container table tr,
+      .det-hits-table tbody,
+      .det-hits-table tr {
+        display: block;
+        width: 100%;
+      }
+      .table-container table tr {
+        margin-bottom: 0.75rem;
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 0.2rem 0.85rem;
+        background: var(--surface) !important;
+      }
+      .det-hits-table tr {
+        margin-bottom: 0.5rem;
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        padding: 0.15rem 0.6rem;
+      }
+      .table-container table td,
+      .det-hits-table td {
+        display: flex !important;
+        justify-content: space-between;
+        align-items: center;
+        gap: 0.75rem;
+        padding: 0.5rem 0 !important;
+        border-bottom: 1px solid var(--border) !important;
+        text-align: right !important;
+        white-space: normal !important;
+        max-width: none !important;
+        overflow: visible !important;
+        text-overflow: clip !important;
+      }
+      .table-container table td:last-child,
+      .det-hits-table td:last-child {
+        border-bottom: none !important;
+      }
+      .table-container table td::before,
+      .det-hits-table td::before {
+        content: attr(data-label);
+        font-weight: 700;
+        font-size: 0.63rem;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        color: var(--text-muted);
+        text-align: left;
+        flex-shrink: 0;
+      }
+      /* Empty-state "No X yet" rows: one plain centered line, not a
+         label:value pair (there's nothing to pair it with). */
+      .table-container table td[colspan],
+      .det-hits-table td[colspan] {
+        display: block !important;
+        text-align: center !important;
+      }
+      .table-container table td[colspan]::before,
+      .det-hits-table td[colspan]::before {
+        content: none;
+      }
+      /* Card mode already gives every row its own bordered box — the
+         desktop zebra-striping reads as a stray tint inside that box. */
+      tbody tr:nth-child(even) td { background: none !important; }
+    }
 
     .ip   { font-family: "SF Mono", "Fira Code", "Consolas", monospace; color: var(--link-color); font-weight: 600; font-size: 0.8rem; cursor: pointer; }
     .ip:hover { text-decoration: underline; }
@@ -614,8 +814,8 @@
       background: var(--surface);
       flex-wrap: wrap;
     }
-    .siem-time-group { display: flex; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; flex-shrink: 0; }
-    .siem-time-btn {
+    .siem-time-group, .ov-time-group { display: flex; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; flex-shrink: 0; }
+    .siem-time-btn, .ov-time-btn {
       background: transparent;
       border: none;
       border-right: 1px solid var(--border);
@@ -627,13 +827,18 @@
       transition: background 0.13s, color 0.13s;
       line-height: 1;
     }
-    .siem-time-btn:last-child { border-right: none; }
-    .siem-time-btn:hover { background: var(--surface-2); color: var(--text); }
-    .siem-time-btn.active { background: var(--accent); color: #fff; }
-    .siem-custom-range { display: none; align-items: center; gap: 0.4rem; }
+    .siem-time-btn:last-child, .ov-time-btn:last-child { border-right: none; }
+    .siem-time-btn:hover, .ov-time-btn:hover { background: var(--surface-2); color: var(--text); }
+    .siem-time-btn.active, .ov-time-btn.active { background: var(--accent); color: #fff; }
+    .siem-custom-range { display: none; align-items: center; gap: 0.4rem; flex-wrap: wrap; }
     .siem-custom-range.visible { display: flex; }
     .siem-custom-range input { width: 125px; padding: 0.22rem 0.5rem; font-size: 0.78rem; }
+    @media (max-width: 480px) { .siem-custom-range input { width: 100%; } }
     .siem-run-btn { margin-left: auto; display: flex; align-items: center; }
+    .ov-filter-bar { display: flex; align-items: center; gap: 0.75rem; flex-wrap: wrap; margin-bottom: 1.125rem; }
+    .ov-filter-label { font-size: 0.73rem; color: var(--text-muted); font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; }
+    .stat-card.clickable, .geo-row.clickable, .tl-bar { cursor: pointer; }
+    .geo-row.clickable:hover .geo-country { color: var(--accent-light); }
     .siem-quick-filters {
       display: flex;
       align-items: center;
@@ -655,6 +860,18 @@
       line-height: 1;
     }
     .siem-pill:hover { background: var(--accent-glow); border-color: var(--accent); color: var(--accent-light); }
+
+    /* ── Sub-tab nav (used within Sessions, protocols in one place) ── */
+    .subtab-nav { display: flex; flex-wrap: wrap; gap: 0.45rem; margin-bottom: 1.125rem; }
+    .subtab-pill {
+      background: var(--surface); border: 1px solid var(--border); color: var(--text-mid);
+      border-radius: 8px; font-size: 0.78rem; font-weight: 600;
+      padding: 0.4rem 0.85rem; cursor: pointer; transition: background 0.13s, color 0.13s, border-color 0.13s;
+    }
+    .subtab-pill:hover { border-color: var(--accent); color: var(--accent-light); }
+    .subtab-pill.active { background: var(--accent-glow); border-color: var(--accent); color: var(--accent-light); }
+    .subtab-panel { display: none; }
+    .subtab-panel.active { display: block; }
     .siem-meta {
       font-size: 0.76rem;
       color: var(--text-muted);
@@ -672,6 +889,8 @@
 
     .log-data { max-width: 255px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: monospace; font-size: 0.73rem; color: var(--text); cursor: pointer; }
     .expanded-row td { background: var(--bg) !important; }
+    .row-reviewed { opacity: 0.5; }
+    .row-reviewed:hover { opacity: 0.8; }
     .expanded-data { font-family: "SF Mono", "Fira Code", "Consolas", monospace; font-size: 0.75rem; color: var(--text-mid); white-space: pre-wrap; word-break: break-all; padding: 0.7rem 1rem; }
     .pagination { display: flex; gap: 0.45rem; align-items: center; justify-content: flex-end; padding: 0.8rem 1.125rem; border-top: 1px solid var(--border); font-size: 0.81rem; }
 
@@ -844,10 +1063,8 @@
   <!-- ── Sidebar ──────────────────────────────────────────── -->
   <aside id="sidebar">
     <div class="sidebar-header">
-      <svg class="logo-icon" width="28" height="28" viewBox="0 0 28 28" fill="none" aria-hidden="true">
-        <polygon points="14,2 25.5,8 25.5,20 14,26 2.5,20 2.5,8" fill="#0b1828" stroke="#2878e0" stroke-width="1.4"/>
-        <circle cx="14" cy="14" r="3.8" fill="#2878e0" opacity="0.88"/>
-        <circle cx="14" cy="14" r="1.5" fill="#a0c8f8"/>
+      <svg class="logo-icon" width="28" height="28" viewBox="0 0 28 28" aria-hidden="true">
+        <text x="14" y="15" font-size="22" text-anchor="middle" dominant-baseline="central">🍯</text>
       </svg>
       <div>
         <div class="logo-name">Honeypot OS</div>
@@ -894,7 +1111,28 @@
         <svg class="nav-icon" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
           <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm0-2a6 6 0 100-12 6 6 0 000 12zm0-2a4 4 0 100-8 4 4 0 000 8zm0-2a2 2 0 100-4 2 2 0 000 4z" clip-rule="evenodd"/>
         </svg>
-        Detections
+        Protocol Detections
+      </div>
+
+      <div class="nav-item" onclick="showTab('signatures')" role="button" tabindex="0">
+        <svg class="nav-icon" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+          <path fill-rule="evenodd" d="M9 2a1 1 0 00-1 1v1.323l-3.954 1.582-1.599-.8a1 1 0 00-.894 1.788l1.233.616-1.738 5.42a1 1 0 00.285 1.05A3.989 3.989 0 004.5 15a3.989 3.989 0 002.667-1.02 1 1 0 00.285-1.05l-1.715-5.349L8 6.323V16H5a1 1 0 100 2h10a1 1 0 100-2h-3V6.323l2.263 1.258-1.715 5.349a1 1 0 00.285 1.05A3.989 3.989 0 0015.5 15a3.989 3.989 0 002.667-1.02 1 1 0 00.285-1.05l-1.738-5.42 1.233-.617a1 1 0 00-.894-1.788l-1.599.8L10 4.323V3a1 1 0 00-1-1z" clip-rule="evenodd"/>
+        </svg>
+        IDS Signatures
+      </div>
+
+      <div class="nav-item" onclick="showTab('sandbox')" role="button" tabindex="0">
+        <svg class="nav-icon" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+          <path fill-rule="evenodd" d="M6 2a2 2 0 00-2 2v12a2 2 0 002 2h8a2 2 0 002-2V7.414A2 2 0 0015.414 6L12 2.586A2 2 0 0010.586 2H6zm5 1.5V6a1 1 0 001 1h2.5L11 3.5zM7 11a1 1 0 011-1h4a1 1 0 110 2H8a1 1 0 01-1-1zm1 3a1 1 0 100 2h4a1 1 0 100-2H8z" clip-rule="evenodd"/>
+        </svg>
+        Malware Samples
+      </div>
+
+      <div class="nav-item" onclick="showTab('sessions')" role="button" tabindex="0">
+        <svg class="nav-icon" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+          <path fill-rule="evenodd" d="M2 5a2 2 0 012-2h12a2 2 0 012 2v10a2 2 0 01-2 2H4a2 2 0 01-2-2V5zm2 0v10h12V5H4zm2 2h2v2H6V7zm0 3h6v1H6v-1z" clip-rule="evenodd"/>
+        </svg>
+        Sessions
       </div>
 
     </nav>
@@ -922,55 +1160,83 @@
         <div class="leaflet-vignette"></div>
       </div>
 
+      <div class="ov-filter-bar" id="ov-filter-bar">
+        <span class="ov-filter-label">Range</span>
+        <div class="ov-time-group">
+          <button class="ov-time-btn" data-range="24h" onclick="setOverviewRange('24h',this)">24h</button>
+          <button class="ov-time-btn active" data-range="7d" onclick="setOverviewRange('7d',this)">7d</button>
+          <button class="ov-time-btn" data-range="30d" onclick="setOverviewRange('30d',this)">30d</button>
+          <button class="ov-time-btn" data-range="all" onclick="setOverviewRange('all',this)">All time</button>
+          <button class="ov-time-btn" data-range="custom" onclick="setOverviewRange('custom',this)">Custom</button>
+        </div>
+        <div class="siem-custom-range" id="ov-custom-range">
+          <input type="date" id="ov-from" aria-label="From Date">
+          <span style="color:var(--text-muted);font-size:0.8rem">→</span>
+          <input type="date" id="ov-to" aria-label="To Date">
+          <button class="btn btn-sm btn-primary" onclick="refresh()">Apply</button>
+        </div>
+      </div>
+
       <div class="stat-grid">
-        <div class="stat-card">
-          <div class="stat-icon-well" style="background:var(--danger-dim)">
-            <svg viewBox="0 0 20 20" fill="var(--danger)" aria-hidden="true">
-              <path fill-rule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clip-rule="evenodd"/>
-            </svg>
-          </div>
-          <div>
+        <div class="stat-card clickable" onclick="goToEvents('')" title="View matching events">
+          <div class="stat-card-head">
+            <div class="stat-icon-well" style="background:var(--danger-dim)">
+              <svg viewBox="0 0 20 20" fill="var(--danger)" aria-hidden="true">
+                <path fill-rule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clip-rule="evenodd"/>
+              </svg>
+            </div>
             <div class="stat-label">Total Attacks</div>
-            <div class="stat-value" id="stat-total">0</div>
           </div>
+          <div class="stat-value" id="stat-total">0</div>
         </div>
 
-        <div class="stat-card">
-          <div class="stat-icon-well" style="background:var(--warning-dim)">
-            <svg viewBox="0 0 20 20" fill="var(--warning)" aria-hidden="true">
-              <path fill-rule="evenodd" d="M18 8a6 6 0 01-7.743 5.743L10 14l-1 1-1 1H6v2H2v-4l4.257-4.257A6 6 0 1118 8zm-6-4a1 1 0 100 2 2 2 0 012 2 1 1 0 102 0 4 4 0 00-4-4z" clip-rule="evenodd"/>
-            </svg>
-          </div>
-          <div>
+        <div class="stat-card clickable" onclick="goToEvents('event_type:credential')" title="View matching events">
+          <div class="stat-card-head">
+            <div class="stat-icon-well" style="background:var(--warning-dim)">
+              <svg viewBox="0 0 20 20" fill="var(--warning)" aria-hidden="true">
+                <path fill-rule="evenodd" d="M18 8a6 6 0 01-7.743 5.743L10 14l-1 1-1 1H6v2H2v-4l4.257-4.257A6 6 0 1118 8zm-6-4a1 1 0 100 2 2 2 0 012 2 1 1 0 102 0 4 4 0 00-4-4z" clip-rule="evenodd"/>
+              </svg>
+            </div>
             <div class="stat-label">Credentials</div>
-            <div class="stat-value" id="stat-creds">0</div>
           </div>
+          <div class="stat-value" id="stat-creds">0</div>
         </div>
 
-        <div class="stat-card">
-          <div class="stat-icon-well" style="background:var(--info-dim)">
-            <svg viewBox="0 0 20 20" fill="var(--info)" aria-hidden="true">
-              <path d="M3 12v3c0 1.657 3.134 3 7 3s7-1.343 7-3v-3c0 1.657-3.134 3-7 3s-7-1.343-7-3z"/>
-              <path d="M3 7v3c0 1.657 3.134 3 7 3s7-1.343 7-3V7c0 1.657-3.134 3-7 3S3 8.657 3 7z"/>
-              <path d="M17 5c0 1.657-3.134 3-7 3S3 6.657 3 5s3.134-3 7-3 7 1.343 7 3z"/>
-            </svg>
-          </div>
-          <div>
+        <div class="stat-card clickable" onclick="showTab('payloads')" title="View payloads">
+          <div class="stat-card-head">
+            <div class="stat-icon-well" style="background:var(--info-dim)">
+              <svg viewBox="0 0 20 20" fill="var(--info)" aria-hidden="true">
+                <path d="M3 12v3c0 1.657 3.134 3 7 3s7-1.343 7-3v-3c0 1.657-3.134 3-7 3s-7-1.343-7-3z"/>
+                <path d="M3 7v3c0 1.657 3.134 3 7 3s7-1.343 7-3V7c0 1.657-3.134 3-7 3S3 8.657 3 7z"/>
+                <path d="M17 5c0 1.657-3.134 3-7 3S3 6.657 3 5s3.134-3 7-3 7 1.343 7 3z"/>
+              </svg>
+            </div>
             <div class="stat-label">Payloads</div>
-            <div class="stat-value" id="stat-payloads">0</div>
           </div>
+          <div class="stat-value" id="stat-payloads">0</div>
         </div>
 
-        <div class="stat-card">
-          <div class="stat-icon-well" style="background:var(--accent-glow)">
-            <svg viewBox="0 0 20 20" fill="var(--accent-light)" aria-hidden="true">
-              <path fill-rule="evenodd" d="M2 5a2 2 0 012-2h12a2 2 0 012 2v2a2 2 0 01-2 2H4a2 2 0 01-2-2V5zm14 1a1 1 0 11-2 0 1 1 0 012 0zM2 13a2 2 0 012-2h12a2 2 0 012 2v2a2 2 0 01-2 2H4a2 2 0 01-2-2v-2zm14 1a1 1 0 11-2 0 1 1 0 012 0z" clip-rule="evenodd"/>
-            </svg>
-          </div>
-          <div>
+        <div class="stat-card clickable" id="stat-top-svc-card" onclick="goToEvents(_ovTopService ? 'service:' + _ovTopService : '')" title="View matching events">
+          <div class="stat-card-head">
+            <div class="stat-icon-well" style="background:var(--accent-glow)">
+              <svg viewBox="0 0 20 20" fill="var(--accent-light)" aria-hidden="true">
+                <path fill-rule="evenodd" d="M2 5a2 2 0 012-2h12a2 2 0 012 2v2a2 2 0 01-2 2H4a2 2 0 01-2-2V5zm14 1a1 1 0 11-2 0 1 1 0 012 0zM2 13a2 2 0 012-2h12a2 2 0 012 2v2a2 2 0 01-2 2H4a2 2 0 01-2-2v-2zm14 1a1 1 0 11-2 0 1 1 0 012 0z" clip-rule="evenodd"/>
+              </svg>
+            </div>
             <div class="stat-label">Top Service</div>
-            <div class="stat-value stat-value-sm" id="stat-top-svc">—</div>
           </div>
+          <div class="stat-value stat-value-sm" id="stat-top-svc">—</div>
+        </div>
+      </div>
+
+      <div class="dashboard-grid" style="margin-bottom:1.125rem">
+        <div class="panel">
+          <div class="panel-header" id="timeline-panel-header">Activity</div>
+          <div id="timeline-chart"></div>
+        </div>
+        <div class="panel">
+          <div class="panel-header">Top Countries</div>
+          <div id="geo-stats" style="padding:0.5rem 1.125rem 0.75rem"></div>
         </div>
       </div>
 
@@ -1032,10 +1298,12 @@
             Run Query
           </button>
           <button class="btn" onclick="clearEventSearch()">Clear</button>
+          <a class="btn" href="/api/events/export.csv" title="Exports every event, not just the current query" download>Export All (CSV)</a>
         </div>
         <div class="siem-quick-filters">
           <span class="siem-quick-label">Quick</span>
           <button class="siem-pill" onclick="siemQuick('risk_score>=70')">High Risk</button>
+          <button class="siem-pill" onclick="siemQuick('reviewed:0')">Unreviewed</button>
           <button class="siem-pill" onclick="siemQuick('event_type:credential')">Credentials</button>
           <button class="siem-pill" onclick="siemQuick('event_type:download_attempt')">Downloads</button>
           <button class="siem-pill" onclick="siemQuick('event_type:exec_attempt')">Exec</button>
@@ -1058,7 +1326,7 @@
       <div class="panel">
         <div class="table-container" style="padding:0">
           <table>
-            <thead><tr><th>Time</th><th>IP</th><th>Country</th><th>Service</th><th>Event</th><th>Details</th><th>Score</th></tr></thead>
+            <thead><tr><th>Time</th><th>IP</th><th>Country</th><th>Service</th><th>Event</th><th>Details</th><th>Score</th><th title="Reviewed">✓</th></tr></thead>
             <tbody id="events-table"></tbody>
           </table>
         </div>
@@ -1068,13 +1336,277 @@
 
     <!-- IDS Alerts Tab -->
     <div id="tab-ids" class="tab-content">
+      <div class="panel" style="margin-bottom:1.125rem">
+        <div style="display:flex;flex-wrap:wrap;gap:0.6rem;align-items:center;padding:0.9rem 1.125rem">
+          <input type="text" id="ids-filter-q" placeholder="Search alert, source IP, category…"
+            style="flex:1;min-width:220px" autocomplete="off"
+            onkeydown="if(event.key==='Enter'){loadIDSAlerts()}">
+          <select id="ids-filter-severity" style="width:auto">
+            <option value="">All Severities</option>
+            <option value="1">Sev 1</option>
+            <option value="2">Sev 2</option>
+            <option value="3">Sev 3</option>
+            <option value="4">Sev 4</option>
+          </select>
+          <input type="date" id="ids-filter-from" aria-label="From Date">
+          <span style="color:var(--text-muted);font-size:0.8rem">→</span>
+          <input type="date" id="ids-filter-to" aria-label="To Date">
+          <label style="display:flex;align-items:center;gap:0.35rem;font-size:0.8rem;color:var(--text-mid);cursor:pointer">
+            <input type="checkbox" id="ids-filter-unreviewed" onchange="loadIDSAlerts()"> Unreviewed only
+          </label>
+          <button class="btn btn-primary btn-sm" onclick="loadIDSAlerts()">Apply</button>
+          <button class="btn btn-sm" onclick="clearIDSFilters()">Clear</button>
+        </div>
+      </div>
       <div class="panel">
         <div class="panel-header">Suricata IDS Alerts</div>
         <div class="table-container" style="padding:0">
           <table>
-            <thead><tr><th>Time</th><th>Source IP</th><th>Alert</th><th>Protocol</th><th>Severity</th></tr></thead>
+            <thead><tr><th>Time</th><th>Source IP</th><th>Alert</th><th>MITRE</th><th>Protocol</th><th>Severity</th><th title="Reviewed">✓</th></tr></thead>
             <tbody id="ids-table"></tbody>
           </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- Signatures Tab: catalog of Suricata detection rules (network layer),
+         counterpart to the Detections tab (app/protocol layer). Mirrors that tab's
+         card-grid layout (grouped by MITRE tactic instead of by service) rather than
+         a plain table, for visual/UX consistency between the two catalogs. -->
+    <div id="tab-signatures" class="tab-content">
+      <div class="det-toolbar">
+        <span class="det-toolbar-title">IDS Signature Catalog — every rule Suricata evaluates, grouped by MITRE tactic</span>
+        <button class="btn btn-primary btn-sm" onclick="openCreateRule()">+ New Rule</button>
+      </div>
+      <div id="signatures-grid" class="detection-grid"></div>
+
+      <div class="det-toolbar" style="margin-top:1.75rem">
+        <span class="det-toolbar-title">Manage Custom Rules — enable, disable, or delete rules created here</span>
+      </div>
+      <div class="panel">
+        <div class="table-container" style="padding:0">
+          <table>
+            <thead><tr><th>Enabled</th><th>Message</th><th>Match</th><th>Classtype</th><th>SID</th><th></th></tr></thead>
+            <tbody id="rules-table"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- Signature Detail Modal -->
+    <div id="signature-modal" class="modal-overlay" onclick="if(event.target===this)closeSignature()" role="dialog" aria-labelledby="sig-modal-title" aria-modal="true">
+      <div class="det-modal">
+        <div class="det-modal-header">
+          <div>
+            <div class="det-modal-title" id="sig-modal-title"></div>
+            <div class="det-modal-sub" id="sig-modal-sub"></div>
+          </div>
+          <button class="btn btn-sm" onclick="closeSignature()">Close</button>
+        </div>
+        <div class="det-modal-section">
+          <h4>MITRE ATT&amp;CK</h4>
+          <div class="mitre-row">
+            <a id="sig-mitre-id" class="mitre-id-big" href="#" target="_blank" rel="noopener" aria-label="View on MITRE ATT&CK website"></a>
+            <div class="mitre-detail"><span>Technique:</span><strong id="sig-mitre-tech"></strong></div>
+            <div class="mitre-detail"><span>Tactic:</span><strong id="sig-mitre-tactic"></strong></div>
+          </div>
+        </div>
+        <div class="det-modal-section">
+          <h4>Detail</h4>
+          <div class="mitre-row" style="flex-wrap:wrap;gap:1.1rem">
+            <div class="mitre-detail"><span>Classtype:</span><strong id="sig-classtype"></strong></div>
+            <div class="mitre-detail"><span>Source:</span><strong id="sig-source"></strong></div>
+            <div class="mitre-detail"><span>Hits:</span><strong id="sig-hits"></strong></div>
+            <div class="mitre-detail"><span>Last Seen:</span><strong id="sig-last-seen"></strong></div>
+          </div>
+        </div>
+        <div class="det-modal-section">
+          <h4>Raw Rule</h4>
+          <div class="table-container" style="padding:0.7rem 1.125rem;background:var(--bg)">
+            <code class="mono" style="font-size:0.72rem;color:var(--text-mid);white-space:pre-wrap;word-break:break-all" id="sig-raw"></code>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Malware Samples Tab: fetched wget/curl payloads, filtered to malware-looking content -->
+    <div id="tab-sandbox" class="tab-content">
+      <div class="panel">
+        <div class="panel-header">Fetch Samples</div>
+        <div class="table-container" style="padding:0">
+          <table>
+            <thead><tr><th>First Seen</th><th>URL</th><th>Size</th><th>Arch</th><th>MIME</th><th>Attempts</th><th></th></tr></thead>
+            <tbody id="sandbox-table"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="panel" style="margin-top:1.125rem">
+        <div class="panel-header">Fetch Activity</div>
+        <div class="table-container" style="padding:0">
+          <table>
+            <thead><tr><th>Time</th><th>URL</th><th>Status</th><th>Source IP</th><th>Detail</th></tr></thead>
+            <tbody id="sandbox-attempts-table"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- Sandbox Sample Detail Modal -->
+    <div id="sandbox-modal" class="modal-overlay" onclick="if(event.target===this)closeSandboxSample()" role="dialog" aria-labelledby="sandbox-modal-title" aria-modal="true">
+      <div class="det-modal">
+        <div class="det-modal-header">
+          <div>
+            <div class="det-modal-title" id="sandbox-modal-title">Sample Detail</div>
+            <div class="det-modal-sub" id="sandbox-modal-sub"></div>
+          </div>
+          <div style="display:flex;gap:0.5rem">
+            <button id="sandbox-view-btn" class="btn btn-sm" onclick="viewSandboxSampleContent()">View</button>
+            <a id="sandbox-download-link" class="btn btn-sm btn-primary" href="#" download>Download</a>
+            <button class="btn btn-sm" onclick="closeSandboxSample()">Close</button>
+          </div>
+        </div>
+        <div class="det-modal-section">
+          <h4>Sample</h4>
+          <div class="mitre-row" style="flex-wrap:wrap;gap:1.1rem">
+            <div class="mitre-detail"><span>SHA256:</span><strong id="sandbox-sha256" class="mono" style="font-size:0.75rem"></strong></div>
+            <div class="mitre-detail"><span>MD5:</span><strong id="sandbox-md5" class="mono" style="font-size:0.75rem"></strong></div>
+            <div class="mitre-detail"><span>Size:</span><strong id="sandbox-size"></strong></div>
+            <div class="mitre-detail"><span>Architecture:</span><strong id="sandbox-arch"></strong></div>
+            <div class="mitre-detail"><span>MIME:</span><strong id="sandbox-mime"></strong></div>
+          </div>
+        </div>
+        <div class="det-modal-section">
+          <h4>Fetch Attempts (<span id="sandbox-attempts-count">0</span>)</h4>
+          <div id="sandbox-attempts" style="font-size:0.82rem;color:var(--text-mid)"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Sandbox Sample Content Viewer — text decode or hex dump, never rendered as HTML -->
+    <div id="sandbox-content-modal" class="modal-overlay" onclick="if(event.target===this)closeSandboxSampleContent()" role="dialog" aria-labelledby="sandbox-content-title" aria-modal="true">
+      <div class="payload-modal-box">
+        <div class="payload-modal-hdr">
+          <span class="payload-modal-title" id="sandbox-content-title">Sample Content</span>
+          <button class="btn btn-sm" onclick="closeSandboxSampleContent()">Close</button>
+        </div>
+        <pre id="sandbox-content-body" class="code-block" style="max-height:52vh; overflow-y:auto; color:var(--text-mid)"></pre>
+        <p id="sandbox-content-truncated" style="font-size:0.7rem;color:var(--text-muted);margin-top:0.5rem"></p>
+      </div>
+    </div>
+
+    <!-- Sessions Tab: full recorded fake-shell drop-ins (SSH/Telnet), replayable -->
+    <div id="tab-sessions" class="tab-content">
+      <div class="subtab-nav">
+        <button class="subtab-pill active" onclick="showSessionsSubtab('shell', this)">Shell</button>
+        <button class="subtab-pill" onclick="showSessionsSubtab('redis', this)">Redis</button>
+        <button class="subtab-pill" onclick="showSessionsSubtab('smtp', this)">SMTP</button>
+        <button class="subtab-pill" onclick="showSessionsSubtab('ftp', this)">FTP</button>
+        <button class="subtab-pill" onclick="showSessionsSubtab('mysql', this)">MySQL</button>
+        <button class="subtab-pill" onclick="showSessionsSubtab('postgres', this)">Postgres</button>
+      </div>
+
+      <div class="subtab-panel active" data-subtab="shell">
+        <div class="panel">
+          <div class="panel-header">Sessions</div>
+          <div class="table-container" style="padding:0">
+            <table>
+              <thead><tr><th>Started</th><th>Service</th><th>Source IP</th><th>Username</th><th>Duration</th><th>Commands</th><th></th></tr></thead>
+              <tbody id="sessions-table"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <div class="subtab-panel" data-subtab="redis">
+        <div class="panel">
+          <div class="panel-header">Redis Command Sessions</div>
+          <div class="table-container" style="padding:0">
+            <table>
+              <thead><tr><th>Started</th><th>Source IP</th><th>Events</th><th>Ended</th><th></th></tr></thead>
+              <tbody id="redis-sessions-table"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <div class="subtab-panel" data-subtab="smtp">
+        <div class="panel">
+          <div class="panel-header">SMTP Sessions</div>
+          <div class="table-container" style="padding:0">
+            <table>
+              <thead><tr><th>Started</th><th>Source IP</th><th>Events</th><th>Ended</th><th></th></tr></thead>
+              <tbody id="smtp-sessions-table"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <div class="subtab-panel" data-subtab="ftp">
+        <div class="panel">
+          <div class="panel-header">FTP Sessions</div>
+          <div class="table-container" style="padding:0">
+            <table>
+              <thead><tr><th>Started</th><th>Source IP</th><th>Events</th><th>Ended</th><th></th></tr></thead>
+              <tbody id="ftp-sessions-table"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <div class="subtab-panel" data-subtab="mysql">
+        <div class="panel">
+          <div class="panel-header">MySQL Sessions</div>
+          <div class="table-container" style="padding:0">
+            <table>
+              <thead><tr><th>Started</th><th>Source IP</th><th>Events</th><th>Ended</th><th></th></tr></thead>
+              <tbody id="mysql-sessions-table"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <div class="subtab-panel" data-subtab="postgres">
+        <div class="panel">
+          <div class="panel-header">Postgres Sessions</div>
+          <div class="table-container" style="padding:0">
+            <table>
+              <thead><tr><th>Started</th><th>Source IP</th><th>Events</th><th>Ended</th><th></th></tr></thead>
+              <tbody id="postgres-sessions-table"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Connection Session Transcript Modal (Redis/SMTP/FTP/MySQL/Postgres) -->
+    <div id="conn-session-modal" class="modal-overlay" onclick="if(event.target===this)closeConnTranscript()" role="dialog" aria-labelledby="conn-session-modal-title" aria-modal="true">
+      <div class="det-modal" style="max-width:820px">
+        <div class="det-modal-header">
+          <div>
+            <div class="det-modal-title" id="conn-session-modal-title">Session Transcript</div>
+            <div class="det-modal-sub" id="conn-session-modal-sub"></div>
+          </div>
+          <button class="btn btn-sm" onclick="closeConnTranscript()">Close</button>
+        </div>
+        <div class="det-modal-section">
+          <div id="conn-session-transcript" style="font-size:0.82rem;color:var(--text-mid)"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Session Replay Modal -->
+    <div id="session-modal" class="modal-overlay" onclick="if(event.target===this)closeSessionReplay()" role="dialog" aria-labelledby="session-modal-title" aria-modal="true">
+      <div class="det-modal" style="max-width:900px">
+        <div class="det-modal-header">
+          <div>
+            <div class="det-modal-title" id="session-modal-title">Session Replay</div>
+            <div class="det-modal-sub" id="session-modal-sub"></div>
+          </div>
+          <button class="btn btn-sm" onclick="closeSessionReplay()">Close</button>
+        </div>
+        <div class="det-modal-section">
+          <div id="session-player" style="background:#000;border-radius:8px;overflow:hidden"></div>
         </div>
       </div>
     </div>
@@ -1096,7 +1628,7 @@
         </div>
         <div class="table-container" style="padding:0">
           <table>
-            <thead><tr><th>Time</th><th>IP</th><th>Service</th><th>MIME Type</th><th>Size</th><th>VT Result</th><th>SHA256</th><th></th></tr></thead>
+            <thead><tr><th>Time</th><th>IP</th><th>Service</th><th>MIME Type</th><th>Size</th><th>SHA256</th><th></th></tr></thead>
             <tbody id="payloads-table"></tbody>
           </table>
         </div>
@@ -1124,6 +1656,14 @@
             <div class="det-modal-sub" id="ids-alert-sub"></div>
           </div>
           <button class="btn btn-sm" onclick="closeIdsAlert()">Close</button>
+        </div>
+        <div class="det-modal-section" id="ids-alert-mitre-section">
+          <h4>MITRE ATT&amp;CK</h4>
+          <div class="mitre-row">
+            <a id="ids-alert-mitre-id" class="mitre-id-big" href="#" target="_blank" rel="noopener" aria-label="View on MITRE ATT&CK website"></a>
+            <div class="mitre-detail"><span>Technique:</span><strong id="ids-alert-mitre-tech"></strong></div>
+            <div class="mitre-detail"><span>Tactic:</span><strong id="ids-alert-mitre-tactic"></strong></div>
+          </div>
         </div>
         <div class="det-modal-section">
           <h4>Alert</h4>
@@ -1183,23 +1723,10 @@
     <!-- Detections Tab -->
     <div id="tab-detections" class="tab-content">
       <div class="det-toolbar">
-        <span class="det-toolbar-title">Configured Detections</span>
+        <span class="det-toolbar-title">Protocol Detections — event types the honeypot’s own trap code logs directly</span>
         <button class="btn btn-primary btn-sm" onclick="openCreateDet()">+ New Detection</button>
       </div>
       <div id="detections-grid" class="detection-grid"></div>
-
-      <div class="det-toolbar" style="margin-top:1.75rem">
-        <span class="det-toolbar-title">Suricata Rules — network-level IDS signatures, not just event tagging</span>
-        <button class="btn btn-primary btn-sm" onclick="openCreateRule()">+ New Rule</button>
-      </div>
-      <div class="panel">
-        <div class="table-container" style="padding:0">
-          <table>
-            <thead><tr><th>Enabled</th><th>Message</th><th>Match</th><th>Classtype</th><th>SID</th><th></th></tr></thead>
-            <tbody id="rules-table"></tbody>
-          </table>
-        </div>
-      </div>
     </div>
 
     <!-- Create Suricata Rule Modal -->
@@ -1260,6 +1787,29 @@
           <div class="form-group">
             <label>Classtype <span style="color:var(--danger)">*</span></label>
             <select id="cr-classtype"></select>
+          </div>
+          <div class="form-group">
+            <label>MITRE ATT&amp;CK <span style="color:var(--text-muted);font-weight:400">(optional, shown in the Signatures catalog)</span></label>
+            <div class="create-det-row">
+              <div class="form-group" style="margin-bottom:0">
+                <label>Tactic</label>
+                <select id="cr-mitre-tactic"></select>
+              </div>
+              <div class="form-group" style="margin-bottom:0">
+                <label>Technique ID</label>
+                <input type="text" id="cr-mitre-id" placeholder="e.g. T1059.004" oninput="crAutoUrl(this.value)" autocomplete="off">
+              </div>
+            </div>
+            <div class="create-det-row" style="margin-top:0.5rem">
+              <div class="form-group" style="margin-bottom:0">
+                <label>Technique Name</label>
+                <input type="text" id="cr-mitre-tech" placeholder="e.g. Unix Shell" autocomplete="off">
+              </div>
+              <div class="form-group" style="margin-bottom:0">
+                <label>ATT&amp;CK URL</label>
+                <input type="text" id="cr-mitre-url" placeholder="Auto-filled from ID" autocomplete="off">
+              </div>
+            </div>
           </div>
           <p id="cr-error" style="color:var(--danger);font-size:0.79rem;margin-top:0.5rem"></p>
           <button class="btn btn-primary" onclick="submitRule()">Create Rule</button>
@@ -1409,8 +1959,6 @@
         </div>
       </div>
     </div>
-
-    <!-- Settings Tab -->
   </main>
 
   <script>
@@ -1477,6 +2025,20 @@
       POSTGRES: { bg: 'rgba(99,102,241,0.13)', fg: '#818cf8', border: 'rgba(99,102,241,0.26)' },
     };
 
+    const TACTIC_COLORS = {
+      'Reconnaissance':       { fg: '#94a3b8' },
+      'Initial Access':       { fg: '#f87171' },
+      'Execution':            { fg: '#fb923c' },
+      'Persistence':          { fg: '#fbbf24' },
+      'Privilege Escalation': { fg: '#facc15' },
+      'Defense Evasion':      { fg: '#a3e635' },
+      'Credential Access':    { fg: '#f472b6' },
+      'Discovery':            { fg: '#22d3ee' },
+      'Lateral Movement':     { fg: '#60a5fa' },
+      'Command and Control':  { fg: '#a78bfa' },
+      'Impact':               { fg: '#ef4444' },
+    };
+
     function svcBadge(svc) {
       const c = SVC_COLORS[svc?.toUpperCase()] || { bg:'rgba(40,120,224,0.12)', fg:'#4e96e8', border:'rgba(40,120,224,0.25)' };
       return `<span style="background:${c.bg};color:${c.fg};border:1px solid ${c.border};padding:0.12rem 0.45rem;border-radius:4px;font-size:0.7rem;font-weight:700;letter-spacing:0.03em">${esc(svc)}</span>`;
@@ -1496,13 +2058,18 @@
         request:          { bg:'rgba(28,168,192,0.11)', fg:'#22d3ee', border:'rgba(28,168,192,0.22)' },
         pubkey_attempt:   { bg:'rgba(220,76,76,0.12)',  fg:'#f87171', border:'rgba(220,76,76,0.22)'  },
         rate_limited:     { bg:'rgba(110,118,129,0.12)',fg:'#8b949e', border:'rgba(110,118,129,0.22)' },
+        config_attempt:   { bg:'rgba(214,151,48,0.12)', fg:'#fbbf24', border:'rgba(214,151,48,0.22)' },
+        replication_attempt: { bg:'rgba(220,76,76,0.14)', fg:'#f87171', border:'rgba(220,76,76,0.28)' },
+        module_attempt:   { bg:'rgba(220,76,76,0.15)',  fg:'#ef4444', border:'rgba(220,76,76,0.3)'   },
+        cluster_attempt:  { bg:'rgba(28,168,192,0.11)', fg:'#22d3ee', border:'rgba(28,168,192,0.22)' },
+        relay_attempt:    { bg:'rgba(236,72,153,0.13)', fg:'#f472b6', border:'rgba(236,72,153,0.26)' },
       };
       const c = map[evt] || { bg:'rgba(40,120,224,0.1)', fg:'#4e96e8', border:'rgba(40,120,224,0.22)' };
       return `<span style="background:${c.bg};color:${c.fg};border:1px solid ${c.border};padding:0.12rem 0.45rem;border-radius:4px;font-size:0.7rem;font-weight:600">${esc(evt)}</span>`;
     }
 
     /* ── Tab navigation ─────────────────────────────────────── */
-    const TAB_TITLES = { overview:'Overview', events:'Events', ids:'IDS Alerts', payloads:'Payloads', detections:'Detections' };
+    const TAB_TITLES = { overview:'Overview', events:'Events', ids:'IDS Alerts', payloads:'Payloads', detections:'Protocol Detections', signatures:'IDS Signatures', sandbox:'Malware Samples', sessions:'Sessions' };
 
     function showTab(tabId) {
       document.querySelectorAll('.tab-content').forEach(el => el.classList.remove('active'));
@@ -1530,7 +2097,18 @@
       }
       else if (tabId === 'events') loadEvents(true);
       else if (tabId === 'payloads') loadPayloads();
-      else if (tabId === 'detections') { loadDetections(); loadRules(); }
+      else if (tabId === 'detections') loadDetections();
+      else if (tabId === 'ids') loadIDSAlerts();
+      else if (tabId === 'signatures') { loadSignatures(); loadRules(); }
+      else if (tabId === 'sandbox') loadSandbox();
+      else if (tabId === 'sessions') {
+        loadSessions();
+        loadConnSessions('REDIS', 'redis-sessions-table');
+        loadConnSessions('SMTP', 'smtp-sessions-table');
+        loadConnSessions('FTP', 'ftp-sessions-table');
+        loadConnSessions('MYSQL', 'mysql-sessions-table');
+        loadConnSessions('POSTGRES', 'postgres-sessions-table');
+      }
 
       else refresh();
     }
@@ -1544,10 +2122,76 @@
       return `<span class="score-badge ${cls}">${score}%</span>`;
     }
 
+    /* ── Overview date-range filter — defaults to 7d. Mirrors the Events tab's
+       _evTimeRange/_getDateRange pattern but kept fully separate (own class
+       names, own state) since the two filter bars belong to different tabs
+       and must not clobber each other's active-button state. ── */
+    let _ovTimeRange = '7d';
+    let _ovTopService = null;
+
+    function _getOverviewDateRange() {
+      if (_ovTimeRange === 'custom') {
+        return {
+          from_date: document.getElementById('ov-from').value,
+          to_date:   document.getElementById('ov-to').value,
+        };
+      }
+      if (_ovTimeRange === 'all') return { from_date: '', to_date: '' };
+      const now  = new Date();
+      const from = new Date(now);
+      if      (_ovTimeRange === '24h') from.setDate(from.getDate() - 1);
+      else if (_ovTimeRange === '7d')  from.setDate(from.getDate() - 7);
+      else if (_ovTimeRange === '30d') from.setDate(from.getDate() - 30);
+      return { from_date: from.toISOString().slice(0, 10), to_date: '' };
+    }
+
+    function setOverviewRange(range, btn) {
+      _ovTimeRange = range;
+      document.querySelectorAll('#ov-filter-bar .ov-time-btn').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      const cr = document.getElementById('ov-custom-range');
+      if (range === 'custom') { cr.classList.add('visible'); return; }
+      cr.classList.remove('visible');
+      refresh();
+    }
+
+    /* Overview → Events drill-down. Carries the Overview's current date range
+       across so what you land on in Events matches what you clicked ("all
+       time" carries nothing, same as leaving Events' own filter untouched).
+       fromOverride/toOverride let timeline-bucket clicks pin an exact day
+       instead of reusing the panel-wide range. */
+    function goToEvents(query, fromOverride, toOverride) {
+      const range = (fromOverride !== undefined)
+        ? { from_date: fromOverride, to_date: toOverride }
+        : _getOverviewDateRange();
+
+      document.getElementById('event-q').value = query || '';
+
+      if (range.from_date || range.to_date) {
+        document.getElementById('event-from').value = range.from_date || '';
+        document.getElementById('event-to').value = range.to_date || range.from_date || '';
+        _evTimeRange = 'custom';
+        document.querySelectorAll('.siem-time-btn').forEach(b => {
+          b.classList.toggle('active', b.dataset.range === 'custom');
+        });
+        document.getElementById('siem-custom-range').classList.add('visible');
+      } else {
+        _evTimeRange = 'all';
+        document.querySelectorAll('.siem-time-btn').forEach(b => {
+          b.classList.toggle('active', b.dataset.range === 'all');
+        });
+        document.getElementById('siem-custom-range').classList.remove('visible');
+      }
+
+      showTab('events'); // events branch of showTab calls loadEvents(true) using the fields just set
+    }
+
     /* ── Overview refresh ───────────────────────────────────── */
     async function refresh() {
       console.log("Refreshing dashboard data...");
-      const stats = await fetchAPI('/api/stats');
+      const range = _getOverviewDateRange();
+      const qs = new URLSearchParams({ from_date: range.from_date, to_date: range.to_date });
+      const stats = await fetchAPI('/api/stats?' + qs);
       if (!stats) {
         console.error("Failed to fetch stats");
         return;
@@ -1555,7 +2199,8 @@
 
       document.getElementById('stat-total').textContent = stats.total.toLocaleString();
       document.getElementById('stat-creds').textContent = stats.credential_count.toLocaleString();
-      document.getElementById('stat-top-svc').textContent = stats.by_service[0]?.service || '—';
+      _ovTopService = stats.by_service[0]?.service || null;
+      document.getElementById('stat-top-svc').textContent = _ovTopService || '—';
       document.getElementById('stat-payloads').textContent = (stats.payload_count ?? 0).toLocaleString();
 
       const highRiskBody = document.getElementById('high-risk-ips');
@@ -1566,22 +2211,73 @@
           <td>${scoreBadge(r.abuse_score)}</td>
           <td class="mono" style="font-size:0.8rem">${r.count.toLocaleString()}</td>
         </tr>
-      `).join('') || `<tr><td colspan="3" style="text-align:center;color:var(--text-muted);padding:2rem;font-size:0.82rem">No high-risk IPs detected</td></tr>`;
+      `).join('') || `<tr><td colspan="4" style="text-align:center;color:var(--text-muted);padding:2rem;font-size:0.82rem">No high-risk IPs detected</td></tr>`;
 
       loadEvents();
       loadIDSAlerts();
+      loadTimeline();
+      loadGeoStats();
+    }
+
+    /* ── Timeline / Geo stats — hand-rolled charts, no charting lib pulled in
+       for two small visualizations. Backends (/api/timeline, /api/geo-stats)
+       already existed and were fully unused before this. Both now scope to
+       the Overview filter bar's range, and both bars/rows drill into Events. ── */
+    async function loadTimeline() {
+      const el = document.getElementById('timeline-chart');
+      const rangeLabel = { '24h':'Last 24h', '7d':'Last 7 Days', '30d':'Last 30 Days', 'all':'All Time', 'custom':'Custom Range' }[_ovTimeRange] || '';
+      document.getElementById('timeline-panel-header').textContent = 'Activity — ' + rangeLabel;
+      try {
+        const range = _getOverviewDateRange();
+        const qs = new URLSearchParams({ from_date: range.from_date, to_date: range.to_date });
+        const rows = await fetchAPI('/api/timeline?' + qs);
+        if (!rows.length) {
+          el.innerHTML = '<div style="text-align:center;color:var(--text-muted);padding:2.5rem;font-size:0.82rem">No activity in this range</div>';
+          return;
+        }
+        const dayBucket = rows[0].hour.length === 10; // "YYYY-MM-DD" vs "YYYY-MM-DDTHH"
+        const bucketLabel = (h) => dayBucket ? h.slice(5) : (h.slice(-2) + ':00');
+        const max = Math.max(...rows.map(r => r.count), 1);
+        const w = 100 / rows.length;
+        const bars = rows.map((r, i) => {
+          const h = Math.max(3, (r.count / max) * 100);
+          return `<div class="tl-bar" style="left:${(i * w).toFixed(2)}%;width:${(w * 0.7).toFixed(2)}%;height:${h.toFixed(1)}%" title="${esc(bucketLabel(r.hour))} — ${r.count.toLocaleString()} events" onclick="_drillIntoTimelineBucket('${esc(r.hour)}')"></div>`;
+        }).join('');
+        el.innerHTML = `<div class="tl-chart">${bars}</div>
+          <div class="tl-labels"><span>${esc(bucketLabel(rows[0].hour))}</span><span>${esc(bucketLabel(rows[rows.length - 1].hour))}</span></div>`;
+      } catch { /* fetchAPI already showed the error toast */ }
+    }
+
+    /* A clicked bucket is either a day ("YYYY-MM-DD") or an hour
+       ("YYYY-MM-DDTHH") — Events' date filter only has day granularity, so
+       either way this pins from/to to that bucket's calendar day. */
+    function _drillIntoTimelineBucket(bucket) {
+      const day = bucket.slice(0, 10);
+      goToEvents('', day, day);
+    }
+
+    async function loadGeoStats() {
+      const el = document.getElementById('geo-stats');
+      try {
+        const range = _getOverviewDateRange();
+        const qs = new URLSearchParams({ from_date: range.from_date, to_date: range.to_date });
+        const rows = await fetchAPI('/api/geo-stats?' + qs);
+        if (!rows.length) {
+          el.innerHTML = '<div style="text-align:center;color:var(--text-muted);padding:2.5rem;font-size:0.82rem">No geo data yet</div>';
+          return;
+        }
+        const max = Math.max(...rows.map(r => r.count), 1);
+        el.innerHTML = rows.slice(0, 8).map(r => `
+          <div class="geo-row clickable" onclick="goToEvents('country:${esc(r.country)}')" title="View matching events">
+            <span class="geo-country">${esc(r.country)}</span>
+            <div class="geo-bar-track"><div class="geo-bar-fill" style="width:${((r.count / max) * 100).toFixed(1)}%"></div></div>
+            <span class="geo-count">${r.count.toLocaleString()}</span>
+          </div>
+        `).join('');
+      } catch { /* fetchAPI already showed the error toast */ }
     }
 
     /* ── Payloads ───────────────────────────────────────────── */
-    function vtBadge(score) {
-      if (!score) return '<span style="color:var(--text-muted)">Pending…</span>';
-      if (score === '0/0 (New)') return '<span class="score-badge score-low">New</span>';
-      const [mal, total] = score.split('/').map(Number);
-      let cls = 'score-low';
-      if (mal > 10) cls = 'score-high';
-      else if (mal > 0) cls = 'score-med';
-      return `<span class="score-badge ${cls}">${score}</span>`;
-    }
 
     async function loadPayloads() {
       const svc = document.getElementById('payload-filter-svc').value;
@@ -1592,34 +2288,446 @@
           <td>${ipLink(p.ip)}</td>
           <td>${svcBadge(p.service)}</td>
           <td class="mono" style="font-size:0.73rem;color:var(--text)">${esc(p.mime_type) || '<span style="color:var(--text-muted)">—</span>'}</td>
-          <td class="mono" style="font-size:0.77rem">${p.file_size != null ? p.file_size.toLocaleString() + ' B' : '<span style="color:var(--text-muted)">—</span>'}</td>
-          <td>${vtBadge(p.vt_score)}</td>
+          <td class="mono" style="font-size:0.77rem;white-space:nowrap">${p.file_size != null ? p.file_size.toLocaleString() + ' B' : '<span style="color:var(--text-muted)">—</span>'}</td>
           <td class="mono" style="font-size:0.68rem;color:var(--text-muted)">${esc((p.sha256 || '').substring(0,16))}…</td>
           <td><button class="btn btn-sm" onclick="viewPayload(${p.id}, '${esc(p.service)} · ${esc(p.ip)}')">View</button></td>
         </tr>
-      `).join('') || `<tr><td colspan="8" style="text-align:center;color:var(--text-muted);padding:2.5rem;font-size:0.82rem">No payloads captured yet</td></tr>`;
+      `).join('') || `<tr><td colspan="7" style="text-align:center;color:var(--text-muted);padding:2.5rem;font-size:0.82rem">No payloads captured yet</td></tr>`;
     }
 
     async function viewPayload(id, title) {
       const data = await fetchAPI(`/api/payloads/${id}/content`);
-      document.getElementById('modal-title').textContent = title;
+      document.getElementById('modal-title').textContent =
+        data.mode === 'hex' ? `${title} (hex dump — binary)` : title;
       document.getElementById('modal-content').textContent = data.preview || '(empty)';
       document.getElementById('modal-truncated').textContent = data.truncated ? 'Preview truncated to 4 KB.' : '';
       document.getElementById('payload-modal').classList.add('open');
     }
 
+    /* ── Malware Sandbox ─────────────────────────────────────── */
+    let _sandboxSampleById = {};
+
+    function _sandboxAttemptStatusBadge(status) {
+      const map = {
+        fetched:       'score-low',
+        dedup_content: 'score-low',
+        dedup_url:     'score-low',
+        not_malware:   'score-low',
+        blocked_ssrf:  'score-high',
+        failed:        'score-med',
+        dns_failed:    'score-med',
+        empty:         'score-med',
+      };
+      return `<span class="score-badge ${map[status] || 'score-med'}">${esc(status)}</span>`;
+    }
+
+    async function loadSandbox() {
+      const tbody = document.getElementById('sandbox-table');
+      try {
+        const rows = await fetchAPI('/api/sandbox/samples');
+        _sandboxSampleById = {};
+        rows.forEach(r => { _sandboxSampleById[r.id] = r; });
+
+        tbody.innerHTML = rows.map(r => `
+          <tr style="cursor:pointer" onclick="openSandboxSample(${r.id})" role="button" tabindex="0">
+            <td class="ts">${esc((r.first_seen_at || '').substring(0,19).replace('T',' '))}</td>
+            <td class="mono" style="font-size:0.75rem;max-width:320px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(r.first_url)}">${esc(r.first_url || '—')}</td>
+            <td class="mono" style="font-size:0.77rem;white-space:nowrap">${r.file_size != null ? r.file_size.toLocaleString() + ' B' : '—'}</td>
+            <td>${esc(r.architecture || '—')}</td>
+            <td class="mono" style="font-size:0.73rem">${esc(r.mime_type || '—')}</td>
+            <td class="mono" style="font-size:0.77rem">${r.attempt_count || 0}</td>
+            <td style="display:flex;gap:0.4rem">
+              <button class="btn btn-sm" onclick="event.stopPropagation();viewSandboxSampleContent(${r.id})">View</button>
+              <a href="/api/sandbox/samples/${r.id}/download" class="btn btn-sm" onclick="event.stopPropagation()">Download</a>
+            </td>
+          </tr>
+        `).join('') || `<tr><td colspan="7" style="text-align:center;color:var(--text-muted);padding:2.5rem;font-size:0.82rem">No samples fetched yet</td></tr>`;
+      } catch { /* fetchAPI already showed the error toast */ }
+
+      const attemptsBody = document.getElementById('sandbox-attempts-table');
+      try {
+        const attempts = await fetchAPI('/api/sandbox/attempts?limit=200');
+        attemptsBody.innerHTML = attempts.map(a => `
+          <tr>
+            <td class="ts">${esc((a.attempted_at || '').substring(0,19).replace('T',' '))}</td>
+            <td class="mono" style="font-size:0.73rem;max-width:320px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(a.url)}">${esc(a.url)}</td>
+            <td>${_sandboxAttemptStatusBadge(a.status)}</td>
+            <td>${ipLink(a.source_ip)}</td>
+            <td style="font-size:0.72rem;color:var(--text-muted);max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(a.error || '')}">${esc(a.error || (a.sample_sha256 ? 'sha256 ' + a.sample_sha256.substring(0,16) + '…' : '—'))}</td>
+          </tr>
+        `).join('') || `<tr><td colspan="5" style="text-align:center;color:var(--text-muted);padding:2rem;font-size:0.82rem">No fetch attempts yet</td></tr>`;
+      } catch { /* fetchAPI already showed the error toast */ }
+    }
+
+    let _currentSandboxSampleId = null;
+
+    async function openSandboxSample(id) {
+      const s = await fetchAPI(`/api/sandbox/samples/${id}`);
+      if (!s || s.error) return;
+      _currentSandboxSampleId = id;
+
+      const firstAttempt = (s.attempts && s.attempts.length) ? s.attempts[s.attempts.length - 1] : null;
+      document.getElementById('sandbox-modal-sub').textContent = firstAttempt ? firstAttempt.url : s.sha256;
+      document.getElementById('sandbox-sha256').textContent = s.sha256;
+      document.getElementById('sandbox-md5').textContent = s.md5 || '—';
+      document.getElementById('sandbox-size').textContent = s.file_size != null ? s.file_size.toLocaleString() + ' B' : '—';
+      document.getElementById('sandbox-arch').textContent = s.architecture || '—';
+      document.getElementById('sandbox-mime').textContent = s.mime_type || '—';
+      document.getElementById('sandbox-download-link').href = `/api/sandbox/samples/${s.id}/download`;
+
+      document.getElementById('sandbox-attempts-count').textContent = (s.attempts || []).length;
+      const attemptsWrap = document.getElementById('sandbox-attempts');
+      if (!s.attempts || !s.attempts.length) {
+        attemptsWrap.innerHTML = '<span style="color:var(--text-muted)">No attempts recorded.</span>';
+      } else {
+        attemptsWrap.innerHTML = s.attempts.map(a => `
+          <div style="padding:0.4rem 0;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;gap:0.75rem;align-items:center">
+            <div style="min-width:0">
+              <div class="mono" style="font-size:0.72rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(a.url)}">${esc(a.url)}</div>
+              <div style="font-size:0.7rem;color:var(--text-muted)">${esc((a.attempted_at||'').substring(0,19).replace('T',' '))} · ${ipLink(a.source_ip)}</div>
+            </div>
+            ${_sandboxAttemptStatusBadge(a.status)}
+          </div>
+        `).join('');
+      }
+
+      document.getElementById('sandbox-modal').classList.add('open');
+    }
+
+    function closeSandboxSample() {
+      document.getElementById('sandbox-modal').classList.remove('open');
+    }
+
+    /* View a sample's raw bytes without downloading — text decode for scripts,
+       hex dump for binaries (see get_sandbox_sample_content). id is optional:
+       omit it to view whatever sample is currently open in the detail modal. */
+    async function viewSandboxSampleContent(id) {
+      const sampleId = id ?? _currentSandboxSampleId;
+      if (sampleId == null) return;
+
+      document.getElementById('sandbox-content-title').textContent = 'Sample Content';
+      document.getElementById('sandbox-content-body').textContent = 'Loading…';
+      document.getElementById('sandbox-content-truncated').textContent = '';
+      document.getElementById('sandbox-content-modal').classList.add('open');
+
+      try {
+        const data = await fetchAPI(`/api/sandbox/samples/${sampleId}/content`);
+        if (!data || data.error) {
+          document.getElementById('sandbox-content-body').textContent = data?.error || 'Failed to load.';
+          return;
+        }
+        document.getElementById('sandbox-content-title').textContent =
+          data.mode === 'hex' ? 'Sample Content (hex dump — binary)' : 'Sample Content';
+        // textContent, never innerHTML — this is attacker-supplied content.
+        document.getElementById('sandbox-content-body').textContent = data.preview || '(empty)';
+        document.getElementById('sandbox-content-truncated').textContent =
+          data.truncated ? `Preview truncated to 4 KB (file is ${data.file_size.toLocaleString()} bytes).` : '';
+      } catch {
+        document.getElementById('sandbox-content-body').textContent = 'Failed to load.';
+      }
+    }
+
+    function closeSandboxSampleContent() {
+      document.getElementById('sandbox-content-modal').classList.remove('open');
+    }
+
+    /* ── Sessions ───────────────────────────────────────────── */
+    let _sessionPlayer = null;
+
+    function _fmtDuration(seconds) {
+      if (seconds == null) return '—';
+      const s = Math.round(seconds);
+      if (s < 60) return `${s}s`;
+      const m = Math.floor(s / 60), rem = s % 60;
+      return `${m}m ${rem}s`;
+    }
+
+    function showSessionsSubtab(name, btn) {
+      document.querySelectorAll('#tab-sessions .subtab-panel').forEach(el => {
+        el.classList.toggle('active', el.dataset.subtab === name);
+      });
+      document.querySelectorAll('#tab-sessions .subtab-pill').forEach(el => el.classList.remove('active'));
+      btn.classList.add('active');
+    }
+
+    /* Sessions -> Events cross-link (the reverse of viewEventSessionReplay).
+       Deep-links into the Events tab's SIEM query bar filtered to this exact
+       connection_id, with the time range widened to "all" since a session
+       could be arbitrarily older than the default 24h window. */
+    function viewSessionEvents(connId) {
+      showTab('events');
+      const allBtn = document.querySelector('.siem-time-btn[data-range="all"]');
+      if (allBtn) setTimeRange('all', allBtn);
+      document.getElementById('event-q').value = `connection_id:${connId}`;
+      loadEvents(true);
+    }
+
+    async function loadSessions() {
+      const tbody = document.getElementById('sessions-table');
+      try {
+        const rows = await fetchAPI('/api/sessions');
+        tbody.innerHTML = rows.map(r => `
+          <tr style="cursor:pointer" onclick="openSessionReplay(${r.id})" role="button" tabindex="0">
+            <td class="ts">${esc((r.started_at || '').substring(0,19).replace('T',' '))}</td>
+            <td>${svcBadge(r.service)}</td>
+            <td>${ipLink(r.ip)}</td>
+            <td class="mono" style="font-size:0.77rem">${esc(r.username || '—')}</td>
+            <td class="mono" style="font-size:0.77rem;white-space:nowrap">${_fmtDuration(r.duration_s)}</td>
+            <td class="mono" style="font-size:0.77rem">${r.command_count || 0}</td>
+            <td style="display:flex;gap:0.4rem">
+              <button class="btn btn-sm" onclick="event.stopPropagation();openSessionReplay(${r.id})">Replay</button>
+              <button class="btn btn-sm" onclick="event.stopPropagation();viewSessionEvents('${esc(r.session_uuid)}')">Events</button>
+            </td>
+          </tr>
+        `).join('') || `<tr><td colspan="7" style="text-align:center;color:var(--text-muted);padding:2.5rem;font-size:0.82rem">No recorded sessions yet</td></tr>`;
+      } catch { /* fetchAPI already showed the error toast */ }
+    }
+
+    function openSessionReplay(id) {
+      document.getElementById('session-modal-title').textContent = 'Session Replay';
+      document.getElementById('session-modal-sub').textContent = `session #${id}`;
+      document.getElementById('session-modal').classList.add('open');
+
+      const container = document.getElementById('session-player');
+      container.innerHTML = '';
+      _sessionPlayer = AsciinemaPlayer.create(`/api/sessions/${id}/cast`, container, {
+        theme: 'monokai',
+        fit: 'width',
+      });
+    }
+
+    function closeSessionReplay() {
+      document.getElementById('session-modal').classList.remove('open');
+      if (_sessionPlayer) {
+        try { _sessionPlayer.dispose(); } catch {}
+        _sessionPlayer = null;
+      }
+      document.getElementById('session-player').innerHTML = '';
+    }
+
+    /* ── Connection Sessions (Redis / SMTP / FTP / MySQL / Postgres) ────
+       Each of these traps is connection-oriented like SSH/Telnet, but not a
+       terminal — so instead of an asciinema replay, we group their events
+       (already logged individually) by events.connection_id into a readable
+       transcript. One generic implementation parametrized by service, since
+       the query/rendering shape is identical across all five. */
+    const CONN_SESSION_LABELS = { REDIS: 'Redis', SMTP: 'SMTP', FTP: 'FTP', MYSQL: 'MySQL', POSTGRES: 'Postgres' };
+
+    async function loadConnSessions(service, tbodyId) {
+      const tbody = document.getElementById(tbodyId);
+      try {
+        const rows = await fetchAPI(`/api/${service.toLowerCase()}-sessions`);
+        tbody.innerHTML = rows.map(r => `
+          <tr style="cursor:pointer" onclick="openConnTranscript('${service}','${esc(r.connection_id)}')" role="button" tabindex="0">
+            <td class="ts">${esc((r.started_at || '').substring(0,19).replace('T',' '))}</td>
+            <td>${ipLink(r.ip)}</td>
+            <td class="mono" style="font-size:0.77rem">${r.event_count || 0}</td>
+            <td class="ts">${esc((r.ended_at || '').substring(11,19))}</td>
+            <td style="display:flex;gap:0.4rem">
+              <button class="btn btn-sm" onclick="event.stopPropagation();openConnTranscript('${service}','${esc(r.connection_id)}')">View</button>
+              <button class="btn btn-sm" onclick="event.stopPropagation();viewSessionEvents('${esc(r.connection_id)}')">Events</button>
+            </td>
+          </tr>
+        `).join('') || `<tr><td colspan="5" style="text-align:center;color:var(--text-muted);padding:2.5rem;font-size:0.82rem">No ${CONN_SESSION_LABELS[service] || service} sessions recorded yet</td></tr>`;
+      } catch { /* fetchAPI already showed the error toast */ }
+    }
+
+    /* Same preview heuristic the Events tab uses for its expandable rows,
+       extended with a few protocol-specific shapes (email/relay/tls) that
+       are worth a readable one-liner rather than a raw JSON dump. */
+    function _eventPreview(eventType, d) {
+      if (eventType === 'credential') {
+        let s = (!d.password && d.scramble) ? `${esc(d.username || '')} (scramble captured, no cleartext)`
+                                             : `${esc(d.username || '')} : ${esc(d.password || '')}`;
+        if (d.database) s += ` · db: ${esc(d.database)}`;
+        if (d.mech) s += ` · ${esc(d.mech)}`;
+        return s.replace(/^\s*:\s*/, '').trim() || '—';
+      }
+      if (eventType === 'email_attempt') {
+        const to = Array.isArray(d.to) ? d.to.join(', ') : (d.to || '');
+        return `${esc(d.from || '?')} → ${esc(to)} : ${esc(d.subject || '(no subject)')}`;
+      }
+      if (eventType === 'relay_attempt') return `HELO ${esc(d.helo)} → RCPT ${esc(d.rcpt)}`;
+      if (d.tls_error) return `TLS error: ${esc(d.tls_error)}`;
+      if (d.cmd) return esc(d.cmd);
+      if (d.args) return esc(d.args);
+      if (d.target) return esc(d.target);
+      if (d.key !== undefined) return `${esc(d.key)} = ${esc(d.value || '')}`;
+      if (d.script) return esc(d.script);
+      return '—';
+    }
+
+    /* email_attempt is the one shape worth showing more than a one-liner for —
+       the captured body is the actual phishing/spam content, which is the
+       whole point of grouping SMTP into a transcript in the first place. */
+    function _eventDetail(eventType, d) {
+      if (eventType === 'email_attempt' && d.body_preview) {
+        return `<div class="mono" style="font-size:0.7rem;color:var(--text-muted);white-space:pre-wrap;word-break:break-word;margin-top:0.35rem;padding:0.45rem;background:var(--surface-2);border-radius:4px;max-height:140px;overflow-y:auto">${esc(d.body_preview)}</div>`;
+      }
+      return '';
+    }
+
+    async function openConnTranscript(service, connectionId) {
+      const label = CONN_SESSION_LABELS[service] || service;
+      document.getElementById('conn-session-modal-title').textContent = `${label} Session Transcript`;
+      document.getElementById('conn-session-modal-sub').textContent = connectionId;
+      document.getElementById('conn-session-modal').classList.add('open');
+
+      const wrap = document.getElementById('conn-session-transcript');
+      wrap.innerHTML = '<span style="color:var(--text-muted)">Loading…</span>';
+      try {
+        const events = await fetchAPI(`/api/${service.toLowerCase()}-sessions/${connectionId}`);
+        wrap.innerHTML = events.map(e => {
+          let d = {};
+          try { d = JSON.parse(e.data || '{}'); } catch {}
+          return `
+            <div style="padding:0.5rem 0;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;gap:0.75rem;align-items:flex-start">
+              <div style="min-width:0;flex:1">
+                <div class="mono" style="font-size:0.78rem;color:var(--text);white-space:pre-wrap;word-break:break-word">${_eventPreview(e.event_type, d)}</div>
+                <div style="font-size:0.7rem;color:var(--text-muted);margin-top:0.15rem">${esc((e.timestamp||'').substring(11,19))}</div>
+                ${_eventDetail(e.event_type, d)}
+              </div>
+              ${evtBadge(e.event_type)}
+            </div>
+          `;
+        }).join('') || '<span style="color:var(--text-muted)">No events in this session.</span>';
+      } catch {
+        wrap.innerHTML = '<span style="color:var(--danger)">Failed to load transcript.</span>';
+      }
+    }
+
+    function closeConnTranscript() {
+      document.getElementById('conn-session-modal').classList.remove('open');
+    }
+
     /* ── IDS Alerts ─────────────────────────────────────────── */
+    function clearIDSFilters() {
+      document.getElementById('ids-filter-q').value = '';
+      document.getElementById('ids-filter-severity').value = '';
+      document.getElementById('ids-filter-from').value = '';
+      document.getElementById('ids-filter-to').value = '';
+      document.getElementById('ids-filter-unreviewed').checked = false;
+      loadIDSAlerts();
+    }
+
+    async function toggleAlertReviewed(id, reviewed, cbEl) {
+      cbEl.closest('tr')?.classList.toggle('row-reviewed', reviewed);
+      try {
+        await fetchAPI(`/api/ids-alerts/${id}/review`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ reviewed }),
+        });
+      } catch {
+        cbEl.checked = !reviewed;
+        cbEl.closest('tr')?.classList.toggle('row-reviewed', !reviewed);
+      }
+    }
+
     async function loadIDSAlerts() {
-      const alerts = await fetchAPI('/api/ids-alerts');
+      const params = new URLSearchParams();
+      const q = document.getElementById('ids-filter-q')?.value.trim();
+      const severity = document.getElementById('ids-filter-severity')?.value;
+      const fromDate = document.getElementById('ids-filter-from')?.value;
+      const toDate = document.getElementById('ids-filter-to')?.value;
+      const unreviewedOnly = document.getElementById('ids-filter-unreviewed')?.checked;
+      if (q) params.set('q', q);
+      if (severity) params.set('severity', severity);
+      if (fromDate) params.set('from_date', fromDate);
+      if (toDate) params.set('to_date', toDate);
+      if (unreviewedOnly) params.set('unreviewed_only', '1');
+
+      const alerts = await fetchAPI('/api/ids-alerts' + (params.toString() ? '?' + params : ''));
       document.getElementById('ids-table').innerHTML = alerts.map(a => `
-        <tr style="cursor:pointer" onclick="openIdsAlert(${a.id})" role="button" tabindex="0">
+        <tr style="cursor:pointer" class="${a.reviewed ? 'row-reviewed' : ''}" onclick="openIdsAlert(${a.id})" role="button" tabindex="0">
           <td class="ts">${esc(a.timestamp.substring(11, 19))}</td>
           <td>${ipLink(a.src_ip)}</td>
           <td style="color:var(--text-mid)">${esc(a.alert_sig)}</td>
+          <td>${a.mitre_technique ? `<span class="mitre-badge">${esc(a.mitre_technique)}</span><span class="tactic-badge">${esc(a.mitre_tactic)}</span>` : '<span style="color:var(--text-muted);font-size:0.75rem">—</span>'}</td>
           <td><span class="mono" style="font-size:0.77rem">${esc(a.proto)}</span></td>
           <td><span class="score-badge ${a.severity <= 1 ? 'score-high' : 'score-med'}">Sev ${a.severity}</span></td>
+          <td onclick="event.stopPropagation()"><input type="checkbox" ${a.reviewed ? 'checked' : ''} title="Mark reviewed" onchange="toggleAlertReviewed(${a.id}, this.checked, this)"></td>
         </tr>
-      `).join('') || `<tr><td colspan="5" style="text-align:center;color:var(--text-muted);padding:2.5rem;font-size:0.82rem">No IDS alerts</td></tr>`;
+      `).join('') || `<tr><td colspan="7" style="text-align:center;color:var(--text-muted);padding:2.5rem;font-size:0.82rem">No IDS alerts</td></tr>`;
+    }
+
+    /* ── Signatures (Suricata rule catalog) ─────────────────── */
+    let _sigById = {};
+
+    async function loadSignatures() {
+      const grid = document.getElementById('signatures-grid');
+      grid.innerHTML = '<div style="grid-column:1/-1;text-align:center;padding:4rem;color:var(--text-muted)">Loading signatures…</div>';
+      try {
+        const rows = await fetchAPI('/api/signatures');
+        _sigById = {};
+        rows.forEach(r => { _sigById[r.sid] = r; });
+
+        const byTactic = {};
+        rows.forEach(r => {
+          const t = r.mitre_tactic || 'Unmapped';
+          (byTactic[t] = byTactic[t] || []).push(r);
+        });
+
+        const order = Object.keys(TACTIC_COLORS).filter(t => byTactic[t]);
+        Object.keys(byTactic).forEach(t => { if (!order.includes(t)) order.push(t); });
+
+        grid.innerHTML = order.map(tactic => {
+          const sigs = byTactic[tactic];
+          const c = TACTIC_COLORS[tactic] || { fg: 'var(--link-color)' };
+          const totalHits = sigs.reduce((sum, r) => sum + r.hits, 0);
+          return `
+          <div class="det-card" style="border-top-color:${c.fg}">
+            <div class="det-card-header">
+              <span class="det-card-title">${esc(tactic)}</span>
+              <span class="det-port">${sigs.length} rule${sigs.length === 1 ? '' : 's'}</span>
+            </div>
+            ${sigs.map(r => `
+              <div class="det-item" onclick="openSignature(${r.sid})" role="button" tabindex="0">
+                <div class="det-left">
+                  <div class="det-label">${esc(r.msg)}</div>
+                  <div class="det-desc">SID ${r.sid} · ${esc(r.classtype || 'unclassified')} · ${esc(r.source)}</div>
+                  <div class="det-badges">
+                    ${r.mitre_technique ? `<span class="mitre-badge">${esc(r.mitre_technique)}</span>` : ''}
+                  </div>
+                </div>
+                <span class="det-count ${r.hits > 0 ? 'active' : 'zero'}">${r.hits > 0 ? r.hits.toLocaleString() : '—'}</span>
+              </div>
+            `).join('')}
+            <div class="det-total">${totalHits.toLocaleString()} total hits across ${sigs.length} signature${sigs.length === 1 ? '' : 's'}</div>
+          </div>`;
+        }).join('') || `<div style="grid-column:1/-1;text-align:center;color:var(--text-muted);padding:3rem;font-size:0.85rem">No signatures found</div>`;
+      } catch { /* fetchAPI already showed the error toast */ }
+    }
+
+    function openSignature(sid) {
+      const r = _sigById[sid];
+      if (!r) return;
+
+      document.getElementById('sig-modal-title').textContent = r.msg;
+      document.getElementById('sig-modal-sub').textContent = `SID ${r.sid} · rev ${r.rev}`;
+
+      const idEl = document.getElementById('sig-mitre-id');
+      if (r.mitre_technique) {
+        idEl.textContent = r.mitre_technique;
+        idEl.href = r.mitre_url || '#';
+      } else {
+        idEl.textContent = '—';
+        idEl.removeAttribute('href');
+      }
+      document.getElementById('sig-mitre-tech').textContent = r.mitre_technique_name || '—';
+      document.getElementById('sig-mitre-tactic').textContent = r.mitre_tactic || '—';
+
+      document.getElementById('sig-classtype').textContent = r.classtype || '—';
+      document.getElementById('sig-source').textContent = r.source;
+      document.getElementById('sig-hits').textContent = r.hits.toLocaleString();
+      document.getElementById('sig-last-seen').textContent = r.last_seen ? r.last_seen.substring(0, 19).replace('T', ' ') : 'never';
+      document.getElementById('sig-raw').textContent = r.rule_text || '(rule text unavailable)';
+
+      document.getElementById('signature-modal').classList.add('open');
+    }
+
+    function closeSignature() {
+      document.getElementById('signature-modal').classList.remove('open');
     }
 
     /* ── IDS Alert Detail Modal ─────────────────────────────── */
@@ -1638,6 +2746,18 @@
       document.getElementById('ids-alert-src').textContent = a.src_port != null ? `${a.src_ip}:${a.src_port}` : (a.src_ip || '—');
       document.getElementById('ids-alert-dport').textContent = a.dst_port != null ? a.dst_port : '—';
       document.getElementById('ids-alert-ts').textContent = a.timestamp || '—';
+
+      const mitreSection = document.getElementById('ids-alert-mitre-section');
+      if (a.mitre_technique) {
+        mitreSection.style.display = '';
+        const idEl = document.getElementById('ids-alert-mitre-id');
+        idEl.textContent = a.mitre_technique;
+        idEl.href = a.mitre_url || '#';
+        document.getElementById('ids-alert-mitre-tech').textContent = a.mitre_technique_name || '—';
+        document.getElementById('ids-alert-mitre-tactic').textContent = a.mitre_tactic || '—';
+      } else {
+        mitreSection.style.display = 'none';
+      }
       document.getElementById('ids-alert-raw').textContent =
         a.raw_parsed ? JSON.stringify(a.raw_parsed, null, 2) : (a.raw || '(no raw event captured)');
 
@@ -1658,13 +2778,13 @@
     function _ipProfileEventsTable(events) {
       if (!events.length) return '<span style="color:var(--text-muted);font-size:0.8rem">No events.</span>';
       return `<table class="det-hits-table">
-        <thead><tr><th>Time</th><th>Service</th><th>Event</th><th>Risk</th></tr></thead>
+        <thead><tr><th>Time</th><th style="text-align:center">Service</th><th style="text-align:center">Event</th><th style="text-align:center">Risk</th></tr></thead>
         <tbody>${events.map(e => `
           <tr>
-            <td style="white-space:nowrap;color:var(--text-muted)">${esc((e.timestamp || '').substring(5,16).replace('T',' '))}</td>
-            <td>${svcBadge(e.service)}</td>
-            <td>${evtBadge(e.event_type)}</td>
-            <td>${scoreBadge(e.risk_score)}</td>
+            <td data-label="Time" style="white-space:nowrap;color:var(--text-muted)">${esc((e.timestamp || '').substring(5,16).replace('T',' '))}</td>
+            <td data-label="Service" style="text-align:center">${svcBadge(e.service)}</td>
+            <td data-label="Event" style="text-align:center">${evtBadge(e.event_type)}</td>
+            <td data-label="Risk" style="text-align:center">${scoreBadge(e.risk_score)}</td>
           </tr>`).join('')}</tbody>
       </table>`;
     }
@@ -1672,13 +2792,13 @@
     function _ipProfileAlertsTable(alerts) {
       if (!alerts.length) return '<span style="color:var(--text-muted);font-size:0.8rem">No IDS alerts.</span>';
       return `<table class="det-hits-table">
-        <thead><tr><th>Time</th><th>Alert</th><th>Protocol</th><th>Severity</th></tr></thead>
+        <thead><tr><th>Time</th><th>Alert</th><th style="text-align:center">Protocol</th><th style="text-align:center">Severity</th></tr></thead>
         <tbody>${alerts.map(a => `
           <tr style="cursor:pointer" onclick="closeIpProfile();openIdsAlert(${a.id})">
-            <td style="white-space:nowrap;color:var(--text-muted)">${esc((a.timestamp || '').substring(5,16).replace('T',' '))}</td>
-            <td style="color:var(--text-mid)">${esc(a.alert_sig)}</td>
-            <td class="mono" style="font-size:0.74rem">${esc(a.proto)}</td>
-            <td><span class="score-badge ${a.severity <= 1 ? 'score-high' : 'score-med'}">Sev ${a.severity}</span></td>
+            <td data-label="Time" style="white-space:nowrap;color:var(--text-muted)">${esc((a.timestamp || '').substring(5,16).replace('T',' '))}</td>
+            <td data-label="Alert" style="color:var(--text-mid)">${esc(a.alert_sig)}</td>
+            <td data-label="Protocol" class="mono" style="font-size:0.74rem;text-align:center">${esc(a.proto)}</td>
+            <td data-label="Severity" style="text-align:center"><span class="score-badge ${a.severity <= 1 ? 'score-high' : 'score-med'}">Sev ${a.severity}</span></td>
           </tr>`).join('')}</tbody>
       </table>`;
     }
@@ -1686,13 +2806,12 @@
     function _ipProfilePayloadsTable(payloads) {
       if (!payloads.length) return '<span style="color:var(--text-muted);font-size:0.8rem">No payloads.</span>';
       return `<table class="det-hits-table">
-        <thead><tr><th>Time</th><th>Service</th><th>MIME</th><th>VT</th></tr></thead>
+        <thead><tr><th>Time</th><th style="text-align:center">Service</th><th>MIME</th></tr></thead>
         <tbody>${payloads.map(p => `
           <tr style="cursor:pointer" onclick="closeIpProfile();viewPayload(${p.id}, '${esc(p.service)} · ${esc(p.ip)}')">
-            <td style="white-space:nowrap;color:var(--text-muted)">${esc((p.timestamp || '').substring(5,16).replace('T',' '))}</td>
-            <td>${svcBadge(p.service)}</td>
-            <td class="mono" style="font-size:0.74rem">${esc(p.mime_type) || '—'}</td>
-            <td>${vtBadge(p.vt_score)}</td>
+            <td data-label="Time" style="white-space:nowrap;color:var(--text-muted)">${esc((p.timestamp || '').substring(5,16).replace('T',' '))}</td>
+            <td data-label="Service" style="text-align:center">${svcBadge(p.service)}</td>
+            <td data-label="MIME" class="mono" style="font-size:0.74rem">${esc(p.mime_type) || '—'}</td>
           </tr>`).join('')}</tbody>
       </table>`;
     }
@@ -1834,7 +2953,7 @@
         } catch { prettyData = e.data || ''; }
 
         const rowId = 'evrow-' + e.id;
-        return `<tr id="${rowId}" class="expandable-row" data-payload="${esc(prettyData)}" onclick="toggleEventRow('${rowId}')" role="button" tabindex="0">
+        return `<tr id="${rowId}" class="expandable-row ${e.reviewed ? 'row-reviewed' : ''}" data-payload="${esc(prettyData)}" data-connid="${esc(e.connection_id || '')}" data-service="${esc(e.service)}" onclick="toggleEventRow('${rowId}')" role="button" tabindex="0">
           <td class="ts">${esc(e.timestamp.substring(5,16).replace('T',' '))}</td>
           <td>${ipLink(e.ip)}</td>
           <td style="font-size:0.75rem;color:var(--text-muted)">${esc(e.country) || '—'}</td>
@@ -1842,8 +2961,9 @@
           <td>${evtBadge(e.event_type)}</td>
           <td class="mono" style="max-width:240px;overflow:hidden;text-overflow:ellipsis;font-size:0.77rem;white-space:nowrap;color:var(--text)">${preview}</td>
           <td>${scoreBadge(e.risk_score)}</td>
+          <td onclick="event.stopPropagation()"><input type="checkbox" ${e.reviewed ? 'checked' : ''} title="Mark reviewed" onchange="toggleEventReviewed(${e.id}, this.checked, this)"></td>
         </tr>`;
-      }).join('') || `<tr><td colspan="7" style="text-align:center;color:var(--text-muted);padding:2.5rem;font-size:0.82rem">No events matched your query</td></tr>`;
+      }).join('') || `<tr><td colspan="8" style="text-align:center;color:var(--text-muted);padding:2.5rem;font-size:0.82rem">No events matched your query</td></tr>`;
 
       const pages = Math.ceil(total / _evLimit);
       const cur   = Math.floor(_evOffset / _evLimit) + 1;
@@ -1855,17 +2975,55 @@
       return results;
     }
 
+    /* Triage state — optimistic update (checkbox + row dimming flip
+       immediately, revert only if the PATCH actually fails), matching the
+       toggleRule pattern already used for Suricata rules. */
+    async function toggleEventReviewed(id, reviewed, cbEl) {
+      cbEl.closest('tr')?.classList.toggle('row-reviewed', reviewed);
+      try {
+        await fetchAPI(`/api/events/${id}/review`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ reviewed }),
+        });
+      } catch {
+        cbEl.checked = !reviewed;
+        cbEl.closest('tr')?.classList.toggle('row-reviewed', !reviewed);
+      }
+    }
+
+    /* Events tab -> Sessions cross-link. SSH/Telnet route to the asciinema
+       replay (needs a shell_sessions integer id, looked up from the uuid
+       carried on the event); the other five protocols already carry both
+       service + connection_id on the event, so no lookup is needed. */
+    async function viewEventSessionReplay(connId) {
+      try {
+        const data = await fetchAPI(`/api/sessions/by-uuid/${connId}`);
+        if (data && data.id != null) openSessionReplay(data.id);
+      } catch { /* fetchAPI already showed the error toast */ }
+    }
+
     function toggleEventRow(rowId) {
       const expandId = rowId + '-exp';
       const existing = document.getElementById(expandId);
       if (existing) { existing.remove(); return; }
       const row  = document.getElementById(rowId);
       const rawData = row.getAttribute('data-payload');
+      const connId  = row.getAttribute('data-connid');
+      const service = row.getAttribute('data-service');
       const cols = row.querySelectorAll('td').length;
       const expRow = document.createElement('tr');
       expRow.id = expandId;
       expRow.className = 'expanded-row';
-      expRow.innerHTML = `<td colspan="${cols}"><div class="expanded-data">${esc(rawData)}</div></td>`;
+
+      let linkHtml = '';
+      if (connId) {
+        linkHtml = (service === 'SSH' || service === 'TELNET')
+          ? `<button class="btn btn-sm" style="margin-top:0.6rem" onclick="event.stopPropagation();viewEventSessionReplay('${esc(connId)}')">▶ Replay this session</button>`
+          : `<button class="btn btn-sm" style="margin-top:0.6rem" onclick="event.stopPropagation();openConnTranscript('${esc(service)}','${esc(connId)}')">View session transcript</button>`;
+      }
+
+      expRow.innerHTML = `<td colspan="${cols}"><div class="expanded-data">${esc(rawData)}</div>${linkHtml}</td>`;
       row.insertAdjacentElement('afterend', expRow);
     }
 
@@ -1882,11 +3040,25 @@
     }
 
     /* ── Detections ─────────────────────────────────────────── */
+    // Keyed by "service::index" rather than embedding the detection object
+    // itself into the onclick attribute below — a custom detection's label/
+    // desc/mitre_* fields are attacker-controllable-in-spirit (anyone who can
+    // reach POST /api/detections sets them with no character sanitization),
+    // and JSON.stringify() into a single-quoted HTML attribute doesn't escape
+    // "'", so a `'` in any of those fields broke out of the attribute and
+    // injected arbitrary HTML/JS into every viewer's dashboard. Only a fixed
+    // service enum and a plain array index ever reach the HTML now.
+    let _detById = {};
+
     async function loadDetections() {
       const grid = document.getElementById('detections-grid');
       grid.innerHTML = '<div style="grid-column:1/-1;text-align:center;padding:4rem;color:var(--text-muted)">Loading detection signatures…</div>';
       try {
         const detData = await fetchAPI('/api/detections');
+        _detById = {};
+        detData.forEach(svc => {
+          svc.detections.forEach((d, i) => { _detById[`${svc.service}::${i}`] = { service: svc.service, d }; });
+        });
         grid.innerHTML = detData.map(svc => {
           const c = SVC_COLORS[svc.service?.toUpperCase()] || { fg: 'var(--link-color)' };
           return `
@@ -1896,8 +3068,8 @@
               <span class="det-port">:${svc.port}</span>
             </div>
             <div class="det-banner">${esc(svc.banner)}</div>
-            ${svc.detections.map(d => `
-              <div class="det-item" onclick='handleDetClick(${JSON.stringify(svc.service)}, ${JSON.stringify(d)})' role="button" tabindex="0">
+            ${svc.detections.map((d, i) => `
+              <div class="det-item" onclick="handleDetClick('${esc(svc.service)}', ${i})" role="button" tabindex="0">
                 <div class="det-left">
                   <div class="det-label">
                     ${esc(d.label)}
@@ -1918,8 +3090,9 @@
       } catch { /* fetchAPI already showed the error toast */ }
     }
 
-    function handleDetClick(service, d) {
-      openDet(service, d);
+    function handleDetClick(service, i) {
+      const entry = _detById[`${service}::${i}`];
+      if (entry) openDet(entry.service, entry.d);
     }
 
     async function openDet(service, d) {
@@ -1966,10 +3139,10 @@
               else preview = e.data ? esc(e.data.substring(0, 100)) : '—';
             } catch { preview = e.data ? esc(e.data.substring(0, 100)) : '—'; }
             return `<tr>
-              <td style="white-space:nowrap;color:var(--text-muted)">${esc(e.timestamp.substring(5,16).replace('T',' '))}</td>
-              <td>${ipLink(e.ip)}</td>
-              <td style="color:var(--text-muted)">${esc(e.country) || '—'}</td>
-              <td class="mono" style="font-size:0.74rem;max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(e.data)}">${preview}</td>
+              <td data-label="Time" style="white-space:nowrap;color:var(--text-muted)">${esc(e.timestamp.substring(5,16).replace('T',' '))}</td>
+              <td data-label="IP">${ipLink(e.ip)}</td>
+              <td data-label="Country" style="color:var(--text-muted)">${esc(e.country) || '—'}</td>
+              <td data-label="Data" class="mono" style="font-size:0.74rem;max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(e.data)}">${preview}</td>
             </tr>`;
           }).join('')}</tbody>
         </table>`;
@@ -2021,6 +3194,15 @@
         b.classList.toggle('active', b.dataset.range === 'all');
       });
       showTab('events');
+    }
+
+    function crAutoUrl(id) {
+      const m = id.trim().match(/^T(\d{4})(?:\.(\d{3}))?$/i);
+      if (!m) return;
+      const url = m[2]
+        ? `https://attack.mitre.org/techniques/T${m[1]}/${m[2]}/`
+        : `https://attack.mitre.org/techniques/T${m[1]}/`;
+      document.getElementById('cr-mitre-url').value = url;
     }
 
     function cdAutoUrl(id) {
@@ -2145,6 +3327,13 @@
       document.getElementById('cr-threshold-count').value = '3';
       document.getElementById('cr-threshold-seconds').value = '60';
       document.getElementById('cr-error').textContent = '';
+
+      const tacticSel = document.getElementById('cr-mitre-tactic');
+      tacticSel.innerHTML = '<option value="">— none —</option>' +
+        Object.keys(TACTIC_COLORS).map(t => `<option value="${esc(t)}">${esc(t)}</option>`).join('');
+      document.getElementById('cr-mitre-id').value = '';
+      document.getElementById('cr-mitre-tech').value = '';
+      document.getElementById('cr-mitre-url').value = '';
       _crOnProtocolChange();
       _crAddContentRow();
 
@@ -2184,6 +3373,10 @@
               seconds: document.getElementById('cr-threshold-seconds').value,
             }
           : null,
+        mitre_tactic: document.getElementById('cr-mitre-tactic').value,
+        mitre_technique: document.getElementById('cr-mitre-id').value.trim(),
+        mitre_technique_name: document.getElementById('cr-mitre-tech').value.trim(),
+        mitre_url: document.getElementById('cr-mitre-url').value.trim(),
       };
 
       try {
@@ -2199,6 +3392,7 @@
         }
         closeCreateRule();
         loadRules();
+        loadSignatures();
         if (!data.reload_ok) showError(data.reload_message);
       } catch (err) {
         errEl.textContent = err.message || 'Failed to create rule.';
@@ -2212,6 +3406,7 @@
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ enabled }),
         });
+        loadSignatures();
         if (!data.reload_ok) showError(data.reload_message);
       } catch { loadRules(); /* revert the checkbox to actual state on failure */ }
     }
@@ -2221,6 +3416,7 @@
       try {
         const data = await fetchAPI(`/api/rules/${id}`, { method: 'DELETE' });
         loadRules();
+        loadSignatures();
         if (!data.reload_ok) showError(data.reload_message);
       } catch { /* toast shown by fetchAPI */ }
     }
@@ -2246,11 +3442,17 @@
         worldCopyJump: true
       });
 
-      // CartoDB Dark Matter — an actual dark basemap (no API key), not a light map
-      // pushed through a CSS invert filter.
-      L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
-        subdomains: 'abcd',
-        maxZoom: 19,
+      // Esri World Dark Gray Base — an actual dark basemap (no API key), not a
+      // light map pushed through a CSS invert filter. CartoDB's dark_all tiles
+      // (used here previously) are still nominally keyless but soft-rate-limit:
+      // once you're over their free anonymous quota they keep returning 200 OK
+      // with a real PNG, just one that says "API KEY REQUIRED" instead of an
+      // actual tile — confirmed live, some tiles loading fine and others not,
+      // which is exactly that failure mode rather than a hard outage. Esri's
+      // REST tile convention is z/y/x (row before column), not the z/x/y most
+      // other providers use — {s} subdomain sharding doesn't apply here either.
+      L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}', {
+        maxZoom: 16,
       }).addTo(_map);
       _attackLayers.addTo(_map);
     }
@@ -2377,6 +3579,34 @@
         }, 2600);
       }
     }
+
+    /* ── Mobile card-mode labels ──────────────────────────────
+       Card mode (see the @media block) needs each <td> to know its own
+       column header text via data-label. Rather than hand-editing every
+       row-template across a dozen load*() functions (error-prone, easy to
+       miss one), a single MutationObserver per persistent tbody applies it
+       automatically whenever that table's rows are replaced — works for
+       every current table and any future one with zero extra wiring. The
+       4 det-hits-table instances (IP-profile/detection-detail modals)
+       aren't covered here since those <table> elements themselves don't
+       exist until the modal opens — they set data-label inline instead. */
+    function _applyRowLabels(tbody) {
+      const table = tbody.closest('table');
+      if (!table) return;
+      const headers = Array.from(table.querySelectorAll('thead th')).map(th => th.textContent.trim());
+      if (!headers.length) return;
+      tbody.querySelectorAll('tr').forEach(tr => {
+        if (tr.querySelector('td[colspan]')) return; // empty-state row
+        Array.from(tr.children).forEach((td, i) => {
+          if (headers[i]) td.setAttribute('data-label', headers[i]);
+        });
+      });
+    }
+
+    document.querySelectorAll('.table-container tbody[id]').forEach(tbody => {
+      _applyRowLabels(tbody);
+      new MutationObserver(() => _applyRowLabels(tbody)).observe(tbody, { childList: true });
+    });
 
     /* ── Boot ───────────────────────────────────────────────── */
     (async () => {

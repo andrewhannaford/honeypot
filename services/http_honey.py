@@ -163,10 +163,30 @@ _BAIT_PATHS = {
     "/phpinfo.php": (_FAKE_PHPINFO, "text/html"),
 }
 
+# Real WP always answers this in JSON, even for an unknown route — including for
+# 404s. WordPress-flavored bait exists elsewhere (wp-login.php etc.), but any
+# WP-fingerprinting tool that specifically checks the REST API was previously
+# getting the plain Apache HTML default page here, an instant "not really
+# WordPress" tell. Confirmed live: a real scanner ran 10+ variants of the
+# REST batch-endpoint abuse pattern (CVE-class) against this trap and got HTML
+# back every time.
+_WP_REST_404 = (
+    b'{"code":"rest_no_route","message":"No route was found matching the URL '
+    b'and request method.","data":{"status":404}}'
+)
+
 _MAX_HEADER_BYTES = 16384  # 16 KB ceiling for request headers
+# The body was previously only whatever arrived in the same read burst as the
+# \r\n\r\n terminator, with no Content-Length-driven read-to-completion — a
+# POST body split across a slow write or multiple TCP segments (e.g. a
+# credential submission to /wp-login.php) could be silently truncated,
+# occasionally losing the captured credentials. Capped, not unbounded: a
+# genuine credential POST is tiny, this only bounds an attacker-supplied
+# Content-Length claim.
+_MAX_BODY_BYTES = 65536
 
 
-def _build_response(status="200 OK", body=_FAKE_HTML, content_type="text/html", location=None):
+def _build_response(status="200 OK", body=_FAKE_HTML, content_type="text/html", location=None, extra_headers=None):
     date = datetime.now(timezone.utc).strftime("%a, %d %b %Y %H:%M:%S GMT")
     header_lines = [
         f"HTTP/1.1 {status}",
@@ -178,9 +198,26 @@ def _build_response(status="200 OK", body=_FAKE_HTML, content_type="text/html", 
     ]
     if location:
         header_lines.append(f"Location: {location}")
-    
+    if extra_headers:
+        header_lines.extend(f"{k}: {v}" for k, v in extra_headers.items())
+
     header = ("\r\n".join(header_lines) + "\r\n\r\n").encode()
     return header + body
+
+
+def _send_response(client_sock, method, response_bytes):
+    """A HEAD response must carry the same headers (Content-Length included)
+    a GET to the same path would, but never the body — real Apache does this;
+    previously every response here sent the full body regardless of method,
+    a specific/cheap tell to anything that checks. Only strips bytes after the
+    header terminator, so Content-Length still (correctly) reflects what GET
+    would have sent."""
+    if method.upper() == "HEAD":
+        sep = b"\r\n\r\n"
+        idx = response_bytes.find(sep)
+        if idx != -1:
+            response_bytes = response_bytes[: idx + len(sep)]
+    client_sock.sendall(response_bytes)
 
 
 def _handle_client(client_sock, client_addr, port=HTTP_PORT, service="HTTP"):
@@ -211,12 +248,7 @@ def _handle_client(client_sock, client_addr, port=HTTP_PORT, service="HTTP"):
             return
 
         method, full_path, _ = (request_line + "   ").split(" ", 2)
-        
-        # Normalize path
-        parsed_url = urllib.parse.urlparse(full_path)
-        path = parsed_url.path.lower().rstrip("/")
-        if not path:
-            path = "/"
+        method_upper = method.upper()
 
         headers = {}
         for line in lines[1:]:
@@ -224,8 +256,22 @@ def _handle_client(client_sock, client_addr, port=HTTP_PORT, service="HTTP"):
                 k, v = line.split(": ", 1)
                 headers[k.lower()] = v
 
-        body_pos = raw_str.find("\r\n\r\n")
-        body = raw_str[body_pos+4:] if body_pos != -1 else ""
+        # Byte offset, not the decoded string's — raw_str.find() can disagree
+        # with the true byte position once errors="ignore" has dropped any
+        # invalid byte, and the body needs to be completed against the real
+        # bytes still arriving on the socket.
+        header_end = raw.find(b"\r\n\r\n")
+        body_bytes = raw[header_end + 4:] if header_end != -1 else b""
+        try:
+            content_length = min(int(headers.get("content-length", "0")), _MAX_BODY_BYTES)
+        except ValueError:
+            content_length = 0
+        while len(body_bytes) < content_length:
+            chunk = client_sock.recv(min(4096, content_length - len(body_bytes)))
+            if not chunk:
+                break
+            body_bytes += chunk
+        body = body_bytes.decode("utf-8", errors="ignore")
 
         # If the direct peer is a trusted reverse proxy (Traefik fronting the phantom
         # hosts), the REAL attacker IP is in X-Forwarded-For — take the left-most entry.
@@ -238,42 +284,90 @@ def _handle_client(client_sock, client_addr, port=HTTP_PORT, service="HTTP"):
             if real:
                 proxy_ip, client_ip = client_ip, real
 
+        # Methods with no per-path routing in real Apache — handled uniformly,
+        # before path parsing even matters. PRI is the HTTP/2 cleartext-upgrade
+        # preface; real Apache doesn't speak h2c and rejects it, same as
+        # CONNECT/TRACE on a plain vhost. Real traffic: 17 PRI (with genuine
+        # HTTP/2 SETTINGS-frame binary bodies from what looks like a scanner
+        # fleet) and 10 CONNECT, all previously getting a fake 200 page instead
+        # of the 400 a real server would give — a clean protocol-conformance
+        # tell for anything checking.
+        if method_upper in ("PRI", "CONNECT", "TRACE"):
+            log_event(client_ip, port, service, "request", {
+                "host": headers.get("host", ""), "method": method, "path": full_path,
+            })
+            client_sock.sendall(_build_response(status="400 Bad Request", body=b"", content_type="text/plain"))
+            return
+        if method_upper == "OPTIONS":
+            log_event(client_ip, port, service, "request", {
+                "host": headers.get("host", ""), "method": method, "path": full_path,
+            })
+            client_sock.sendall(_build_response(
+                status="200 OK", body=b"", content_type="text/plain",
+                extra_headers={"Allow": "GET,POST,HEAD,OPTIONS"},
+            ))
+            return
+
+        # Normalize path
+        parsed_url = urllib.parse.urlparse(full_path)
+        path = parsed_url.path.lower().rstrip("/")
+        if not path:
+            path = "/"
+
         # Common metadata on every trap event: the Host header tells us WHICH (phantom)
         # hostname a probe targeted — the key signal once Traefik routes junk subdomains
-        # here — and the User-Agent fingerprints the scanner.
+        # here — and the User-Agent fingerprints the scanner. referer/cookie/x-api-version
+        # and the raw x-forwarded-for value are logged too now — previously discarded
+        # after parsing, a structural blind spot for anything delivered via a header
+        # other than User-Agent (e.g. a JNDI-style probe in X-Forwarded-For).
         meta = {
             "host": headers.get("host", ""),
             "user_agent": headers.get("user-agent", ""),
+            "referer": headers.get("referer", ""),
+            "cookie": headers.get("cookie", ""),
+            "x_api_version": headers.get("x-api-version", ""),
+            "x_forwarded_for": headers.get("x-forwarded-for", ""),
         }
         if proxy_ip:
             meta["via_proxy"] = proxy_ip
 
         # Dispatch traps
         if path == "/wp-login.php":
-            if method.upper() == "POST":
+            if method_upper == "POST":
                 # Extract credentials
                 params = urllib.parse.parse_qs(body)
                 user = params.get("log", [""])[0]
                 pw = params.get("pwd", [""])[0]
                 log_event(client_ip, port, service, "credential", {**meta, "username": user, "password": pw, "path": path})
                 send_alert(service, client_ip, f"Login (WP): `{user}` / `{pw}`", alert_type="credential")
-                client_sock.sendall(_build_response(status="200 OK", body=b"Login failed"))
+                _send_response(client_sock, method, _build_response(status="200 OK", body=b"Login failed"))
             else:
                 log_event(client_ip, port, service, "trap_hit", {**meta, "path": path})
-                client_sock.sendall(_build_response(status="200 OK", body=_WP_LOGIN_FORM))
+                _send_response(client_sock, method, _build_response(status="200 OK", body=_WP_LOGIN_FORM))
         elif path == "/wp-admin":
             log_event(client_ip, port, service, "trap_hit", {**meta, "path": path})
-            client_sock.sendall(_build_response(status="301 Moved Permanently", body=b"", location="/wp-login.php"))
+            _send_response(client_sock, method, _build_response(status="301 Moved Permanently", body=b"", location="/wp-login.php"))
         elif path == "/.env":
             log_event(client_ip, port, service, "trap_hit", {**meta, "path": path})
-            client_sock.sendall(_build_response(status="200 OK", body=_FAKE_ENV, content_type="text/plain"))
+            _send_response(client_sock, method, _build_response(status="200 OK", body=_FAKE_ENV, content_type="text/plain"))
+        elif path.startswith("/wp-json") or "rest_route=" in full_path.lower():
+            event = log_event(client_ip, port, service, "trap_hit", {**meta, "path": path, "method": method, "body": body[:512]})
+            if body:
+                save_payload(client_ip, service, body.encode("utf-8", errors="replace"), event_id=event.get("rowid"))
+            _send_response(client_sock, method, _build_response(status="404 Not Found", body=_WP_REST_404, content_type="application/json"))
         elif path in _BAIT_PATHS:
             # Serving a canary file is the highest-signal event here: it means the
             # attacker asked for a credential store by name, not just crawled the site.
+            # method/body are now captured (previously dropped) and save_payload is
+            # called when a body is present — the /sdk path (626 hits, the single
+            # most-probed path on this box) carries real vSphere SOAP login POSTs
+            # with attempted credentials in the XML body that were being discarded.
             payload, ctype = _BAIT_PATHS[path]
-            log_event(client_ip, port, service, "trap_hit", {**meta, "path": path})
+            event = log_event(client_ip, port, service, "trap_hit", {**meta, "path": path, "method": method, "body": body[:512]})
+            if body:
+                save_payload(client_ip, service, body.encode("utf-8", errors="replace"), event_id=event.get("rowid"))
             send_alert(service, client_ip, f"Canary served: `{path}`", alert_type="exec_attempt")
-            client_sock.sendall(_build_response(status="200 OK", body=payload, content_type=ctype))
+            _send_response(client_sock, method, _build_response(status="200 OK", body=payload, content_type=ctype))
         else:
             # Default response
             event = log_event(client_ip, port, service, "request", {
@@ -286,7 +380,7 @@ def _handle_client(client_sock, client_addr, port=HTTP_PORT, service="HTTP"):
                 save_payload(client_ip, service, body.encode("utf-8", errors="replace"),
                              event_id=event.get("rowid"))
             # No alert for standard requests to avoid flooding
-            client_sock.sendall(_build_response())
+            _send_response(client_sock, method, _build_response())
 
     except Exception:
         # traceback.print_exc()

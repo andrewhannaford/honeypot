@@ -10,7 +10,8 @@ from logger import log_event
 from alerts.discord import send_alert
 from payloads import save_payload
 from config import SSH_PORT, SSH_BANNER, SSH_ACCEPT_RATE
-from services.fake_shell import run_shell
+from services.fake_shell import run_shell, dispatch_command, COMPOUND_SPLIT_RE
+from session_recorder import SessionRecorder
 
 KEY_PATH = "data/ssh_host_key"
 URL_REGEX = re.compile(r"https?://\S+")
@@ -53,6 +54,25 @@ class _SSHServer(paramiko.ServerInterface):
             send_alert("SSH", self.client_ip, f"Exec: `{cmd_str}`", alert_type=event_type)
             save_payload(self.client_ip, "SSH", command, event_id=event.get("rowid"))
 
+            if not is_download:
+                # Route non-download execs through the same dispatch table the
+                # interactive shell uses, so a one-shot `ssh host "uname -a"`
+                # (or scripted-recon) exec gets believable text back instead
+                # of nothing. Confirmed live this was a real gap: MikroTik
+                # RouterOS `/ip cloud print` probes (8 hits) got exit_status 0
+                # and zero bytes of output — a real device replies with
+                # cloud-DDNS status text. Download commands are deliberately
+                # NOT routed here: they're already fully classified/logged/
+                # alerted above, and dispatch_command's own wget/curl branch
+                # would otherwise log the same exec a second time.
+                output = []
+                for sub in COMPOUND_SPLIT_RE.split(cmd_str):
+                    sub = sub.strip()
+                    if sub:
+                        dispatch_command(sub, output.append, self.client_ip, SSH_PORT, "SSH", "/root")
+                if output:
+                    channel.send("".join(output).replace("\r\n", "\n").encode("utf-8", errors="replace"))
+
             channel.send_exit_status(0)
             channel.close()
             return True
@@ -94,6 +114,7 @@ class _SSHServer(paramiko.ServerInterface):
 def _handle_client(client_sock, client_addr):
     client_ip = client_addr[0]
     transport = None
+    session = None
     try:
         log_event(client_ip, SSH_PORT, "SSH", "connect")
         send_alert("SSH", client_ip, "New connection", alert_type="connect")
@@ -112,11 +133,19 @@ def _handle_client(client_sock, client_addr):
             # Set a timeout for interactive inactivity
             channel.settimeout(120)
 
-            def send_fn(x):
+            def _raw_send(x):
                 try:
                     channel.send(x.encode("utf-8", errors="replace"))
                 except Exception:
                     pass
+
+            # Recording starts here, not earlier — auth already succeeded (that's
+            # why we have a channel), so this is exactly the point a real attacker
+            # "drops into" a shell. Wrapping send_fn before recv_line_fn is built
+            # below means the per-character echo it does also gets captured, not
+            # just command output.
+            session = SessionRecorder(client_ip, SSH_PORT, "SSH", server.username)
+            send_fn = session.wrap(_raw_send)
 
             def recv_line_fn():
                 buffer = b""
@@ -142,13 +171,15 @@ def _handle_client(client_sock, client_addr):
                     except Exception:
                         return None
 
-            run_shell(send_fn, recv_line_fn, client_ip, SSH_PORT, "SSH", server.username)
+            run_shell(send_fn, recv_line_fn, client_ip, SSH_PORT, "SSH", server.username, session=session)
             channel.close()
 
     except Exception:
         # traceback.print_exc()
         pass
     finally:
+        if session:
+            session.finalize()
         if transport:
             try:
                 transport.close()

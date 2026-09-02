@@ -29,7 +29,8 @@ class TestRedisHoney(unittest.TestCase):
         self._set_data(b"*2\r\n$4\r\nAUTH\r\n$7\r\npass123\r\n")
         _handle_client(self.sock, self.addr)
         
-        mock_log.assert_any_call("1.2.3.4", 6379, "REDIS", "credential", {"password": "pass123"})
+        mock_log.assert_any_call("1.2.3.4", 6379, "REDIS", "credential", {"password": "pass123"},
+                                  connection_id=unittest.mock.ANY)
         self.sock.sendall.assert_any_call(b"+OK\r\n")
 
     @patch("services.redis_honey.save_payload")
@@ -39,7 +40,8 @@ class TestRedisHoney(unittest.TestCase):
         self._set_data(b"FLUSHALL\r\n")
         _handle_client(self.sock, self.addr)
 
-        mock_log.assert_any_call("1.2.3.4", 6379, "REDIS", "command", {"cmd": "FLUSHALL"})
+        mock_log.assert_any_call("1.2.3.4", 6379, "REDIS", "command", {"cmd": "FLUSHALL"},
+                                  connection_id=unittest.mock.ANY)
         self.sock.sendall.assert_any_call(b"+OK\r\n")
         mock_save.assert_called_once()
 
@@ -52,7 +54,8 @@ class TestRedisHoney(unittest.TestCase):
         self._set_data(data)
         _handle_client(self.sock, self.addr)
 
-        mock_log.assert_any_call("1.2.3.4", 6379, "REDIS", "set_attempt", unittest.mock.ANY)
+        mock_log.assert_any_call("1.2.3.4", 6379, "REDIS", "set_attempt", unittest.mock.ANY,
+                                  connection_id=unittest.mock.ANY)
         mock_save.assert_called_once()
         saved_data = mock_save.call_args[0][2]
         self.assertIn(b"* * * * *", saved_data)
@@ -65,7 +68,8 @@ class TestRedisHoney(unittest.TestCase):
         self._set_data(b"EVAL return 1 0\r\n")
         _handle_client(self.sock, self.addr)
 
-        mock_log.assert_any_call("1.2.3.4", 6379, "REDIS", "eval_attempt", unittest.mock.ANY)
+        mock_log.assert_any_call("1.2.3.4", 6379, "REDIS", "eval_attempt", unittest.mock.ANY,
+                                  connection_id=unittest.mock.ANY)
         mock_save.assert_called_once()
 
 if __name__ == "__main__":

@@ -5,12 +5,15 @@ import sqlite3
 import threading
 import csv
 import io
-from datetime import datetime, timedelta, timezone
-from flask import Flask, Response, jsonify, render_template, stream_with_context, request
+from datetime import datetime, timedelta, timezone, date
+from flask import Flask, Response, jsonify, render_template, stream_with_context, request, send_file
 import config
 import query_lang
 import rule_builder
 from logger import register_event_callback
+from mitre_map import lookup as mitre_lookup
+import re
+import os
 
 app = Flask(__name__)
 
@@ -31,6 +34,17 @@ def _int_param(args, key, default, cap=None):
     except (ValueError, TypeError):
         val = int(default)
     return min(val, cap) if cap is not None else val
+
+
+def _hex_dump(data, width=16):
+    """Classic hexdump -C style: offset, hex bytes, printable-ASCII gutter."""
+    lines = []
+    for i in range(0, len(data), width):
+        chunk = data[i:i + width]
+        hex_part = " ".join(f"{b:02x}" for b in chunk).ljust(width * 3 - 1)
+        ascii_part = "".join(chr(b) if 32 <= b < 127 else "." for b in chunk)
+        lines.append(f"{i:08x}  {hex_part}  |{ascii_part}|")
+    return "\n".join(lines)
 
 def publish_attack_event(event_dict):
     """Push geo-tagged events to all connected SSE clients (logger callback)."""
@@ -405,6 +419,404 @@ def rule_classtypes():
     })
 
 
+_RULE_LINE_RE = re.compile(
+    r'sid:\s*(\d+).*?rev:\s*(\d+)'
+)
+_RULE_MSG_RE = re.compile(r'msg:\s*"((?:[^"\\]|\\.)*)"')
+_RULE_CLASSTYPE_RE = re.compile(r'classtype:\s*([a-zA-Z0-9_-]+)')
+
+
+def _parse_rule_file(path, source):
+    """Extract sid/msg/classtype from each active rule line in a Suricata rules
+    file. Regex-based rather than a full rule-grammar parser: good enough for our
+    own straightforward rules (one alert per line, no multi-line continuations),
+    and avoids adding a Suricata rule-parsing dependency for a read-only catalog view."""
+    rules = []
+    if not os.path.exists(path):
+        return rules
+    with open(path) as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#") or not line.startswith("alert"):
+                continue
+            sid_m = _RULE_LINE_RE.search(line)
+            msg_m = _RULE_MSG_RE.search(line)
+            classtype_m = _RULE_CLASSTYPE_RE.search(line)
+            if not sid_m or not msg_m:
+                continue
+            rules.append({
+                "sid": int(sid_m.group(1)),
+                "rev": int(sid_m.group(2)),
+                "msg": msg_m.group(1),
+                "classtype": classtype_m.group(1) if classtype_m else None,
+                "source": source,
+                "rule_text": line,
+            })
+    return rules
+
+
+@app.route("/api/signatures")
+def get_signatures():
+    """Catalog of every Suricata detection signature we have — baseline
+    (suricata.rules) plus anything added through the dashboard's rule builder
+    (custom.rules) — each with its MITRE ATT&CK tag and live hit count. This is
+    the network-layer counterpart to /api/detections (the app-layer protocol
+    catalog): that one shows what the honeypot's own trap code instruments,
+    this one shows what Suricata is watching for on the wire."""
+    rules = (
+        _parse_rule_file(config.SURICATA_RULES_PATH, "baseline")
+        + _parse_rule_file(config.CUSTOM_RULES_PATH, "custom")
+    )
+
+    conn = _get_db()
+    try:
+        hit_rows = conn.execute(
+            "SELECT sid, COUNT(*) as hits, MAX(timestamp) as last_seen "
+            "FROM suricata_alerts WHERE sid IS NOT NULL GROUP BY sid"
+        ).fetchall()
+    finally:
+        conn.close()
+    hits_by_sid = {r["sid"]: {"hits": r["hits"], "last_seen": r["last_seen"]} for r in hit_rows}
+
+    # Custom (dashboard-created) rules carry their own per-rule MITRE tags —
+    # entered at creation time, since mitre_map.py can only know the fixed set of
+    # baseline signature strings, not arbitrary user-authored ones.
+    custom_mitre_by_sid = {
+        cr["sid"]: {
+            "mitre_tactic": cr.get("mitre_tactic"),
+            "mitre_technique": cr.get("mitre_technique"),
+            "mitre_technique_name": cr.get("mitre_technique_name"),
+            "mitre_url": cr.get("mitre_url"),
+        }
+        for cr in rule_builder.list_rules()
+    }
+
+    result = []
+    for r in rules:
+        if r["source"] == "custom" and r["sid"] in custom_mitre_by_sid:
+            m = custom_mitre_by_sid[r["sid"]]
+            if not m["mitre_tactic"]:
+                m = mitre_lookup(r["msg"])
+        else:
+            m = mitre_lookup(r["msg"])
+        hit_info = hits_by_sid.get(r["sid"], {"hits": 0, "last_seen": None})
+        result.append({
+            **r,
+            **m,
+            "hits": hit_info["hits"],
+            "last_seen": hit_info["last_seen"],
+        })
+
+    result.sort(key=lambda r: r["sid"])
+    return jsonify(result)
+
+
+@app.route("/api/sandbox/samples")
+def get_sandbox_samples():
+    """Unique fetched-content inventory. first_url/first_source_ip/attempt_count
+    come from sandbox_fetch_attempts — a sample itself no longer carries
+    per-attempt provenance (see sandbox/db.py's module docstring for why that
+    split exists)."""
+    limit = _int_param(request.args, "limit", 100, cap=500)
+    offset = _int_param(request.args, "offset", 0)
+    conn = _get_db()
+    try:
+        rows = conn.execute(
+            """SELECT s.id, s.sha256, s.md5, s.file_size, s.mime_type, s.architecture,
+                      s.first_seen_at,
+                      (SELECT url FROM sandbox_fetch_attempts WHERE sample_id = s.id ORDER BY id ASC LIMIT 1) AS first_url,
+                      (SELECT source_ip FROM sandbox_fetch_attempts WHERE sample_id = s.id ORDER BY id ASC LIMIT 1) AS first_source_ip,
+                      (SELECT COUNT(*) FROM sandbox_fetch_attempts WHERE sample_id = s.id) AS attempt_count
+               FROM sandbox_samples s
+               ORDER BY s.id DESC LIMIT ? OFFSET ?""",
+            (limit, offset),
+        ).fetchall()
+        return jsonify([dict(r) for r in rows])
+    finally:
+        conn.close()
+
+
+@app.route("/api/sandbox/samples/<int:sample_id>")
+def get_sandbox_sample_detail(sample_id):
+    conn = _get_db()
+    try:
+        sample = conn.execute("SELECT * FROM sandbox_samples WHERE id = ?", (sample_id,)).fetchone()
+        if not sample:
+            return jsonify({"error": "not found"}), 404
+
+        attempts = conn.execute(
+            "SELECT * FROM sandbox_fetch_attempts WHERE sample_id = ? ORDER BY id DESC", (sample_id,)
+        ).fetchall()
+
+        result = dict(sample)
+        result["attempts"] = [dict(a) for a in attempts]
+        return jsonify(result)
+    finally:
+        conn.close()
+
+
+@app.route("/api/sandbox/samples/<int:sample_id>/download")
+def download_sandbox_sample(sample_id):
+    """Serves the raw fetched bytes. Always application/octet-stream and
+    always as_attachment — this content is untrusted by definition, so the
+    browser must never be given a chance to sniff/render it inline (a
+    malicious HTML/SVG/JS sample rendered inline would be a stored-XSS vector
+    against the dashboard's own origin)."""
+    conn = _get_db()
+    try:
+        row = conn.execute(
+            "SELECT sha256, local_path FROM sandbox_samples WHERE id = ?", (sample_id,)
+        ).fetchone()
+    finally:
+        conn.close()
+    if not row:
+        return jsonify({"error": "not found"}), 404
+    if not row["local_path"]:
+        return jsonify({"error": "file missing on disk"}), 404
+    # Flask/Werkzeug's send_file resolves a *relative* path against app.root_path
+    # (here /app/dashboard, since that's where this module lives) rather than the
+    # process cwd (/app) — a different resolution rule than plain os.path.exists()
+    # or sqlite3.connect() use, both of which are cwd-relative. local_path is
+    # stored cwd-relative ("data/sandbox_samples/<sha256>"), so send_file was
+    # silently looking in /app/dashboard/data/... and 500ing with FileNotFoundError
+    # (confirmed live). Resolving to an absolute path once, up front, sidesteps
+    # the inconsistency entirely regardless of which resolution rule is used downstream.
+    abs_path = os.path.abspath(row["local_path"])
+    if not os.path.exists(abs_path):
+        return jsonify({"error": "file missing on disk"}), 404
+    return send_file(
+        abs_path,
+        as_attachment=True,
+        download_name=f"{row['sha256']}.bin",
+        mimetype="application/octet-stream",
+    )
+
+
+@app.route("/api/sandbox/samples/<int:sample_id>/content")
+def get_sandbox_sample_content(sample_id):
+    """View-only preview of a fetched sample's bytes — same 4KB-cap posture
+    as get_payload_content, but hex-dumped instead of text-decoded when the
+    content is actually binary (a real ELF, or anything with a null byte),
+    since that's most of what lands here — unlike payloads, which skew
+    text/shell. JSON response only, never send_file: this is rendered into a
+    <pre> via textContent on the frontend, not served as a navigable
+    resource, so there's no risk of a browser being handed attacker content
+    with a content-type that invites it to do anything other than display
+    text."""
+    conn = _get_db()
+    try:
+        row = conn.execute(
+            "SELECT local_path, sha256, mime_type, architecture FROM sandbox_samples WHERE id = ?",
+            (sample_id,),
+        ).fetchone()
+    finally:
+        conn.close()
+    if not row:
+        return jsonify({"error": "not found"}), 404
+    if not row["local_path"]:
+        return jsonify({"error": "file missing on disk"}), 404
+
+    # Same cwd-vs-app.root_path resolution gotcha as the download route.
+    abs_path = os.path.abspath(row["local_path"])
+    if not os.path.exists(abs_path):
+        return jsonify({"error": "file missing on disk"}), 404
+
+    file_size = os.path.getsize(abs_path)
+    with open(abs_path, "rb") as f:
+        data = f.read(4096)  # cap preview at 4 KB, same as payload preview
+
+    is_binary = row["architecture"] not in (None, "not_elf") or b"\x00" in data
+    if is_binary:
+        preview = _hex_dump(data)
+        mode = "hex"
+    else:
+        preview = data.decode("utf-8", errors="replace")
+        mode = "text"
+
+    return jsonify({
+        "preview": preview,
+        "mode": mode,
+        "truncated": file_size > 4096,
+        "file_size": file_size,
+    })
+
+
+@app.route("/api/sandbox/attempts")
+def get_sandbox_attempts():
+    """Every URL the fetcher has ever looked at, in order, regardless of
+    outcome — the activity log. This is what makes dedup skips, SSRF blocks,
+    and failed connections visible instead of silent."""
+    limit = _int_param(request.args, "limit", 200, cap=1000)
+    offset = _int_param(request.args, "offset", 0)
+    conn = _get_db()
+    try:
+        rows = conn.execute(
+            """SELECT a.*, s.sha256 AS sample_sha256
+               FROM sandbox_fetch_attempts a
+               LEFT JOIN sandbox_samples s ON s.id = a.sample_id
+               ORDER BY a.id DESC LIMIT ? OFFSET ?""",
+            (limit, offset),
+        ).fetchall()
+        return jsonify([dict(r) for r in rows])
+    finally:
+        conn.close()
+
+
+@app.route("/api/sessions")
+def get_sessions():
+    """Recorded interactive fake-shell drop-ins (SSH/Telnet) — see
+    session_recorder.py. Metadata only; the replay itself is fetched
+    separately via /api/sessions/<id>/cast."""
+    limit = _int_param(request.args, "limit", 100, cap=500)
+    offset = _int_param(request.args, "offset", 0)
+    conn = _get_db()
+    try:
+        rows = conn.execute(
+            """SELECT id, session_uuid, ip, port, service, username, started_at,
+                      duration_s, event_count, command_count
+               FROM shell_sessions ORDER BY id DESC LIMIT ? OFFSET ?""",
+            (limit, offset),
+        ).fetchall()
+        return jsonify([dict(r) for r in rows])
+    finally:
+        conn.close()
+
+
+@app.route("/api/sessions/by-uuid/<session_uuid>")
+def get_session_id_by_uuid(session_uuid):
+    """Lets an Events-tab row (which only carries events.connection_id, not
+    the shell_sessions integer id) jump straight to its replay — the id is
+    what /api/sessions/<id>/cast and the replay modal actually need."""
+    conn = _get_db()
+    try:
+        row = conn.execute(
+            "SELECT id FROM shell_sessions WHERE session_uuid = ?", (session_uuid,)
+        ).fetchone()
+    finally:
+        conn.close()
+    if not row:
+        return jsonify({"error": "not found"}), 404
+    return jsonify({"id": row["id"]})
+
+
+@app.route("/api/sessions/<int:session_id>/cast")
+def get_session_cast(session_id):
+    """Serves the raw asciinema .cast file for the dashboard's embedded
+    player. text/plain, not an attachment — this is our own generated replay
+    data (terminal I/O the honeypot itself wrote), not attacker-supplied
+    binary content, so there's no download_sandbox_sample-style inline-render
+    risk here; asciinema-player parses it as text/NDJSON into a terminal
+    emulator, never as HTML."""
+    conn = _get_db()
+    try:
+        row = conn.execute(
+            "SELECT cast_path FROM shell_sessions WHERE id = ?", (session_id,)
+        ).fetchone()
+    finally:
+        conn.close()
+    if not row:
+        return jsonify({"error": "not found"}), 404
+    # Same cwd-vs-app.root_path gotcha as download_sandbox_sample — cast_path is
+    # stored cwd-relative, send_file resolves relative paths against app.root_path.
+    abs_path = os.path.abspath(row["cast_path"])
+    if not os.path.exists(abs_path):
+        return jsonify({"error": "recording missing on disk"}), 404
+    return send_file(abs_path, mimetype="text/plain")
+
+
+def _grouped_connection_sessions(service):
+    """Groups events.connection_id (see logger.py / each services/*_honey.py
+    handler) into one row per connection for a given protocol, so a full
+    interaction — e.g. Redis's SLAVEOF -> MODULE LOAD RCE chain, or an SMTP
+    conversation's HELO -> MAIL -> RCPT -> DATA — can be read as a narrative
+    instead of scattered rows in the Events tab. Live GROUP BY, not a
+    separate summary table per protocol: unlike shell_sessions (which points
+    at a binary .cast blob on disk), everything here already lives in the
+    events table."""
+    limit = _int_param(request.args, "limit", 100, cap=500)
+    offset = _int_param(request.args, "offset", 0)
+    conn = _get_db()
+    try:
+        rows = conn.execute(
+            """SELECT connection_id, ip,
+                      MIN(timestamp) AS started_at, MAX(timestamp) AS ended_at,
+                      COUNT(*) AS event_count
+               FROM events
+               WHERE service = ? AND connection_id IS NOT NULL
+               GROUP BY connection_id
+               ORDER BY started_at DESC LIMIT ? OFFSET ?""",
+            (service, limit, offset),
+        ).fetchall()
+        return jsonify([dict(r) for r in rows])
+    finally:
+        conn.close()
+
+
+def _connection_transcript(service, connection_id):
+    conn = _get_db()
+    try:
+        rows = conn.execute(
+            """SELECT id, timestamp, event_type, data FROM events
+               WHERE service = ? AND connection_id = ? ORDER BY id ASC""",
+            (service, connection_id),
+        ).fetchall()
+    finally:
+        conn.close()
+    if not rows:
+        return jsonify({"error": "not found"}), 404
+    return jsonify([dict(r) for r in rows])
+
+
+@app.route("/api/redis-sessions")
+def get_redis_sessions():
+    return _grouped_connection_sessions("REDIS")
+
+
+@app.route("/api/redis-sessions/<connection_id>")
+def get_redis_session_transcript(connection_id):
+    return _connection_transcript("REDIS", connection_id)
+
+
+@app.route("/api/smtp-sessions")
+def get_smtp_sessions():
+    return _grouped_connection_sessions("SMTP")
+
+
+@app.route("/api/smtp-sessions/<connection_id>")
+def get_smtp_session_transcript(connection_id):
+    return _connection_transcript("SMTP", connection_id)
+
+
+@app.route("/api/ftp-sessions")
+def get_ftp_sessions():
+    return _grouped_connection_sessions("FTP")
+
+
+@app.route("/api/ftp-sessions/<connection_id>")
+def get_ftp_session_transcript(connection_id):
+    return _connection_transcript("FTP", connection_id)
+
+
+@app.route("/api/mysql-sessions")
+def get_mysql_sessions():
+    return _grouped_connection_sessions("MYSQL")
+
+
+@app.route("/api/mysql-sessions/<connection_id>")
+def get_mysql_session_transcript(connection_id):
+    return _connection_transcript("MYSQL", connection_id)
+
+
+@app.route("/api/postgres-sessions")
+def get_postgres_sessions():
+    return _grouped_connection_sessions("POSTGRES")
+
+
+@app.route("/api/postgres-sessions/<connection_id>")
+def get_postgres_session_transcript(connection_id):
+    return _connection_transcript("POSTGRES", connection_id)
+
+
 @app.route("/api/search")
 def search_logs():
     """SIEM-style search. `q` is a full query_lang.py expression — see that module's
@@ -447,43 +859,26 @@ def search_logs():
         conn.close()
 
 
+@app.route("/api/events/<int:event_id>/review", methods=["POST"])
+def set_event_reviewed(event_id):
+    body = request.get_json(silent=True) or {}
+    reviewed = 1 if body.get("reviewed") else 0
+    conn = _get_db()
+    try:
+        cur = conn.execute("UPDATE events SET reviewed = ? WHERE id = ?", (reviewed, event_id))
+        conn.commit()
+        if cur.rowcount == 0:
+            return jsonify({"error": "not found"}), 404
+        return jsonify({"id": event_id, "reviewed": bool(reviewed)})
+    finally:
+        conn.close()
+
+
 @app.route("/")
 def index():
     return render_template(
         "index.html", server_lat=config.SERVER_LAT, server_lon=config.SERVER_LON
     )
-
-
-@app.route("/api/events")
-def get_events():
-    svc = request.args.get("service")
-    etype = request.args.get("event_type")
-    search = request.args.get("search")
-    limit = _int_param(request.args, "limit", 200, cap=1000)
-    offset = _int_param(request.args, "offset", 0)
-
-    query = "SELECT * FROM events WHERE 1=1"
-    params = []
-
-    if svc:
-        query += " AND service = ?"
-        params.append(svc)
-    if etype:
-        query += " AND event_type = ?"
-        params.append(etype)
-    if search:
-        query += " AND ip LIKE ?"
-        params.append(f"{search}%")
-
-    query += " ORDER BY timestamp DESC LIMIT ? OFFSET ?"
-    params.extend([limit, offset])
-
-    conn = _get_db()
-    try:
-        rows = conn.execute(query, params).fetchall()
-        return jsonify([dict(r) for r in rows])
-    finally:
-        conn.close()
 
 
 @app.route("/api/events/export.csv")
@@ -511,16 +906,37 @@ def export_events_csv():
 
 @app.route("/api/stats")
 def get_stats():
+    """from_date/to_date are optional and scope every figure below to that window
+    (same inclusive convention as /api/search — to_date gets T23:59:59 appended).
+    Omitting both preserves the original all-time behavior for anything hitting
+    this route directly."""
+    from_date = request.args.get("from_date", "").strip()
+    to_date = request.args.get("to_date", "").strip()
+
+    ts_conditions = []
+    ts_params: list = []
+    if from_date:
+        ts_conditions.append("timestamp >= ?")
+        ts_params.append(from_date)
+    if to_date:
+        ts_conditions.append("timestamp <= ?")
+        ts_params.append(to_date + "T23:59:59")
+    ts_where = (" AND " + " AND ".join(ts_conditions)) if ts_conditions else ""
+
     conn = _get_db()
     try:
-        total = conn.execute("SELECT COUNT(*) as c FROM events").fetchone()["c"]
+        total = conn.execute(
+            f"SELECT COUNT(*) as c FROM events WHERE 1=1{ts_where}", ts_params
+        ).fetchone()["c"]
 
         by_service = conn.execute(
-            "SELECT service, COUNT(*) as count FROM events GROUP BY service ORDER BY count DESC"
+            f"SELECT service, COUNT(*) as count FROM events WHERE 1=1{ts_where} "
+            "GROUP BY service ORDER BY count DESC", ts_params
         ).fetchall()
 
         top_ips = conn.execute(
-            "SELECT ip, COUNT(*) as count, MAX(risk_score) as max_score FROM events GROUP BY ip ORDER BY count DESC LIMIT 10"
+            f"SELECT ip, COUNT(*) as count, MAX(risk_score) as max_score FROM events "
+            f"WHERE 1=1{ts_where} GROUP BY ip ORDER BY count DESC LIMIT 10", ts_params
         ).fetchall()
 
         # High-risk IPs, ranked by the local composite risk_score (severity + volume +
@@ -528,20 +944,23 @@ def get_stats():
         # alone: that only covers a couple of event types and misses IPs AbuseIPDB
         # simply hasn't seen yet. Raw abuse_score is still surfaced alongside it.
         high_risk = conn.execute(
-            "SELECT ip, MAX(risk_score) as score, MAX(abuse_score) as abuse_score, "
-            "COUNT(*) as count FROM events WHERE risk_score > 0 "
-            "GROUP BY ip ORDER BY score DESC LIMIT 10"
+            f"SELECT ip, MAX(risk_score) as score, MAX(abuse_score) as abuse_score, "
+            f"COUNT(*) as count FROM events WHERE risk_score > 0{ts_where} "
+            "GROUP BY ip ORDER BY score DESC LIMIT 10", ts_params
         ).fetchall()
 
         credential_count = conn.execute(
-            "SELECT COUNT(*) as c FROM events WHERE event_type='credential'"
+            f"SELECT COUNT(*) as c FROM events WHERE event_type='credential'{ts_where}", ts_params
         ).fetchone()["c"]
 
         recent_creds = conn.execute(
-            "SELECT * FROM events WHERE event_type='credential' ORDER BY timestamp DESC LIMIT 50"
+            f"SELECT * FROM events WHERE event_type='credential'{ts_where} "
+            "ORDER BY timestamp DESC LIMIT 50", ts_params
         ).fetchall()
 
-        payload_count = conn.execute("SELECT COUNT(*) as c FROM payloads").fetchone()["c"]
+        payload_count = conn.execute(
+            f"SELECT COUNT(*) as c FROM payloads WHERE 1=1{ts_where}", ts_params
+        ).fetchone()["c"]
 
         return jsonify({
             "total": total,
@@ -562,7 +981,7 @@ def get_payloads():
     svc = request.args.get("service")
     conn = _get_db()
     try:
-        query = "SELECT id, timestamp, ip, service, filename, file_size, md5, sha256, mime_type, local_path, vt_score FROM payloads WHERE 1=1"
+        query = "SELECT id, timestamp, ip, service, filename, file_size, md5, sha256, mime_type, local_path FROM payloads WHERE 1=1"
         params = []
         if svc:
             query += " AND service = ?"
@@ -577,10 +996,16 @@ def get_payloads():
 
 @app.route("/api/payloads/<int:payload_id>/content")
 def get_payload_content(payload_id):
+    """Same text-vs-hex-dump posture as get_sandbox_sample_content. This used
+    to have a `except Exception: preview = data.hex()` fallback that was
+    actually dead code — str.decode(errors="replace") never raises — so
+    binary payloads rendered as replacement-character soup instead of a
+    readable hex dump. No architecture column here (that's sandbox-specific
+    ELF detection), so the null-byte check is the only binary signal."""
     conn = _get_db()
     try:
         row = conn.execute(
-            "SELECT local_path, mime_type FROM payloads WHERE id = ?", (payload_id,)
+            "SELECT local_path FROM payloads WHERE id = ?", (payload_id,)
         ).fetchone()
     finally:
         conn.close()
@@ -588,30 +1013,66 @@ def get_payload_content(payload_id):
     if not row:
         return jsonify({"error": "not found"}), 404
 
-    import os
     local_path = row["local_path"]
     if not os.path.exists(local_path):
         return jsonify({"error": "file missing"}), 404
 
+    file_size = os.path.getsize(local_path)
     with open(local_path, "rb") as f:
         data = f.read(4096)  # cap preview at 4 KB
 
-    try:
+    if b"\x00" in data:
+        preview = _hex_dump(data)
+        mode = "hex"
+    else:
         preview = data.decode("utf-8", errors="replace")
-    except Exception:
-        preview = data.hex()
+        mode = "text"
 
-    return jsonify({"preview": preview, "truncated": os.path.getsize(local_path) > 4096})
+    return jsonify({"preview": preview, "mode": mode, "truncated": file_size > 4096})
 
 
 @app.route("/api/ids-alerts")
 def get_ids_alerts():
+    """Dedicated filter params rather than routing through query_lang.py —
+    suricata_alerts is a different table with a different, smaller column
+    set than events, so reusing the generic query parser would mean either
+    teaching it a second schema or silently pretending the two are the same
+    shape. A plain filter form gets this tab search parity with Events
+    without that risk."""
     limit = min(int(request.args.get("limit", 100)), 500)
+    q = request.args.get("q", "").strip()
+    severity = request.args.get("severity", "").strip()
+    tactic = request.args.get("mitre_tactic", "").strip()
+    from_date = request.args.get("from_date", "").strip()
+    to_date = request.args.get("to_date", "").strip()
+    unreviewed_only = request.args.get("unreviewed_only", "").strip()
+
+    query = "SELECT * FROM suricata_alerts WHERE 1=1"
+    params = []
+    if q:
+        like = f"%{q}%"
+        query += " AND (alert_sig LIKE ? OR src_ip LIKE ? OR category LIKE ?)"
+        params += [like, like, like]
+    if severity:
+        query += " AND severity = ?"
+        params.append(severity)
+    if tactic:
+        query += " AND mitre_tactic = ?"
+        params.append(tactic)
+    if unreviewed_only:
+        query += " AND reviewed = 0"
+    if from_date:
+        query += " AND timestamp >= ?"
+        params.append(from_date)
+    if to_date:
+        query += " AND timestamp <= ?"
+        params.append(to_date + "T23:59:59")
+    query += " ORDER BY timestamp DESC LIMIT ?"
+    params.append(limit)
+
     conn = _get_db()
     try:
-        rows = conn.execute(
-            "SELECT * FROM suricata_alerts ORDER BY timestamp DESC LIMIT ?", (limit,)
-        ).fetchall()
+        rows = conn.execute(query, params).fetchall()
         return jsonify([dict(r) for r in rows])
     finally:
         conn.close()
@@ -633,6 +1094,21 @@ def get_ids_alert_detail(alert_id):
         except (TypeError, ValueError):
             alert["raw_parsed"] = None
         return jsonify(alert)
+    finally:
+        conn.close()
+
+
+@app.route("/api/ids-alerts/<int:alert_id>/review", methods=["POST"])
+def set_ids_alert_reviewed(alert_id):
+    body = request.get_json(silent=True) or {}
+    reviewed = 1 if body.get("reviewed") else 0
+    conn = _get_db()
+    try:
+        cur = conn.execute("UPDATE suricata_alerts SET reviewed = ? WHERE id = ?", (reviewed, alert_id))
+        conn.commit()
+        if cur.rowcount == 0:
+            return jsonify({"error": "not found"}), 404
+        return jsonify({"id": alert_id, "reviewed": bool(reviewed)})
     finally:
         conn.close()
 
@@ -695,31 +1171,70 @@ def get_ip_profile(ip):
 
 @app.route("/api/timeline")
 def get_timeline():
+    """from_date/to_date match /api/stats' convention; omitting from_date preserves
+    the original last-24h behavior. Bucket granularity is adaptive: hourly buckets
+    ("YYYY-MM-DDTHH") stay readable up to a few days, but a 30-day/all-time range
+    would render hundreds of unreadable hour-bars, so anything spanning more than
+    3 days buckets by day ("YYYY-MM-DD") instead — same substr trick, shorter slice."""
+    from_date = request.args.get("from_date", "").strip()
+    to_date = request.args.get("to_date", "").strip()
+
+    if from_date:
+        start_ts = from_date
+        try:
+            span_days = (date.today() - date.fromisoformat(from_date)).days
+        except ValueError:
+            span_days = 0
+        bucket_len = 10 if span_days > 3 else 13
+    else:
+        start_ts = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
+        bucket_len = 13
+
+    conditions = ["timestamp >= ?"]
+    params: list = [start_ts]
+    if to_date:
+        conditions.append("timestamp <= ?")
+        params.append(to_date + "T23:59:59")
+    where = " AND ".join(conditions)
+
     conn = _get_db()
     try:
-        rows = conn.execute("""
-            SELECT substr(timestamp, 1, 13) as hour, COUNT(*) as count
+        rows = conn.execute(f"""
+            SELECT substr(timestamp, 1, {bucket_len}) as hour, COUNT(*) as count
             FROM events
-            WHERE timestamp > ?
+            WHERE {where}
             GROUP BY hour
             ORDER BY hour ASC
-        """, ((datetime.now(timezone.utc) - timedelta(hours=24)).isoformat(),)).fetchall()
+        """, params).fetchall()
         return jsonify([dict(r) for r in rows])
     finally:
         conn.close()
 
 @app.route("/api/geo-stats")
 def get_geo_stats():
+    from_date = request.args.get("from_date", "").strip()
+    to_date = request.args.get("to_date", "").strip()
+
+    conditions = ["country IS NOT NULL"]
+    params: list = []
+    if from_date:
+        conditions.append("timestamp >= ?")
+        params.append(from_date)
+    if to_date:
+        conditions.append("timestamp <= ?")
+        params.append(to_date + "T23:59:59")
+    where = " AND ".join(conditions)
+
     conn = _get_db()
     try:
-        rows = conn.execute("""
+        rows = conn.execute(f"""
             SELECT country, COUNT(*) as count
             FROM events
-            WHERE country IS NOT NULL
+            WHERE {where}
             GROUP BY country
             ORDER BY count DESC
             LIMIT 20
-        """).fetchall()
+        """, params).fetchall()
         return jsonify([dict(r) for r in rows])
     finally:
         conn.close()

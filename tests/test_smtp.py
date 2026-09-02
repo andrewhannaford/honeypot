@@ -23,8 +23,9 @@ class TestSMTPHoney(unittest.TestCase):
         ]
         _handle_client(self.sock, self.addr)
         
-        mock_log.assert_any_call("1.2.3.4", 25, "SMTP", "credential", 
-                                 {"username": "user123", "password": "pass456", "mech": "PLAIN"})
+        mock_log.assert_any_call("1.2.3.4", 25, "SMTP", "credential",
+                                 {"username": "user123", "password": "pass456", "mech": "PLAIN"},
+                                 connection_id=unittest.mock.ANY)
 
     @patch("services.smtp_honey.save_payload")
     @patch("services.smtp_honey.log_event")
@@ -43,7 +44,8 @@ class TestSMTPHoney(unittest.TestCase):
         ]
         _handle_client(self.sock, self.addr)
 
-        mock_log.assert_any_call("1.2.3.4", 25, "SMTP", "email_attempt", unittest.mock.ANY)
+        mock_log.assert_any_call("1.2.3.4", 25, "SMTP", "email_attempt", unittest.mock.ANY,
+                                  connection_id=unittest.mock.ANY)
         args = [call.args for call in mock_log.call_args_list if len(call.args) > 3 and call.args[3] == "email_attempt"][0]
         data = args[4]
         self.assertEqual(data["from"], "test@example.com")

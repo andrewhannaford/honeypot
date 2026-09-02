@@ -1,0 +1,29 @@
+FROM python:3.12-slim
+ENV PYTHONUNBUFFERED=1
+WORKDIR /app
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends libmagic1 && \
+    rm -rf /var/lib/apt/lists/*
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+COPY config.py ssrf_guard.py fetcher.py analyzer.py db.py ./
+RUN mkdir -p data
+
+# Non-root, no elevated capabilities of any kind — this process makes real
+# outbound connections to attacker-supplied hosts on the DMZ egress path, but
+# never touches docker.sock and never executes fetched content.
+#
+# uid/gid 10001 matches the main honeypot service's "honeypot" user (see the
+# other Dockerfile) on purpose: both processes read/write the same honeypot.db
+# file over the shared honeypot-data volume, and that file is 0644 owned by
+# 10001:10001 — a different uid here would only be able to read it, not write
+# (confirmed: this was the actual cause of the fetcher's first crash-loop,
+# "attempt to write a readonly database"). No security benefit to a distinct
+# uid for two processes that already share full read-write access to the same
+# data; matching it is just correct.
+RUN groupadd --gid 10001 honeypot && \
+    useradd --uid 10001 --gid honeypot --no-create-home --shell /usr/sbin/nologin honeypot && \
+    chown -R honeypot:honeypot /app
+USER honeypot
+
+CMD ["python", "fetcher.py"]

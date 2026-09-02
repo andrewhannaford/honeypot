@@ -1,7 +1,7 @@
 import socket
 import threading
 import time
-import traceback
+import uuid
 import ratelimit
 from logger import log_event
 from alerts.discord import send_alert
@@ -10,8 +10,9 @@ from config import FTP_PORT, FTP_BANNER
 
 def _handle_client(client_sock, client_addr):
     client_ip = client_addr[0]
+    connection_id = uuid.uuid4().hex
     try:
-        log_event(client_ip, FTP_PORT, "FTP", "connect")
+        log_event(client_ip, FTP_PORT, "FTP", "connect", connection_id=connection_id)
         send_alert("FTP", client_ip, "New connection", alert_type="connect")
 
         client_sock.settimeout(30)
@@ -50,7 +51,8 @@ def _handle_client(client_sock, client_addr):
                         client_sock.sendall(b"503 Login with USER first.\r\n")
                     else:
                         log_event(client_ip, FTP_PORT, "FTP", "credential",
-                                  {"username": username, "password": arg})
+                                  {"username": username, "password": arg},
+                                  connection_id=connection_id)
                         send_alert("FTP", client_ip, f"Login attempt: `{username}` / `{arg}`",
                                    alert_type="credential")
                         client_sock.sendall(b"530 Login incorrect.\r\n")
@@ -61,7 +63,7 @@ def _handle_client(client_sock, client_addr):
                 else:
                     client_sock.sendall(b"530 Please login with USER and PASS.\r\n")
     except Exception:
-        traceback.print_exc()
+        pass
     finally:
         try:
             client_sock.close()

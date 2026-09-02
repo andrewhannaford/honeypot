@@ -9,7 +9,6 @@ services:
       - OUTBOX_TOKEN=${OUTBOX_TOKEN:-}
       - ALERT_OUTBOX_MAX=${ALERT_OUTBOX_MAX:-5000}
       - ABUSEIPDB_API_KEY=${ABUSEIPDB_API_KEY:-}
-      - VIRUSTOTAL_API_KEY=${VIRUSTOTAL_API_KEY:-}
       - TRUSTED_PROXIES=${TRUSTED_PROXIES:-}
       # Defaulted here (not left blank) so a fresh checkout with no .env doesn't
       # make a live outbound call to ipinfo.io on first boot — see config.py's
@@ -39,6 +38,26 @@ services:
       # "reload-rules" after writing a new rule instead of restarting the
       # container (which would briefly drop af-packet capture).
       - ./run/suricata:/app/suricata_run
+    restart: unless-stopped
+
+  # Malware sandbox — fetcher + static analysis only, by design. See
+  # sandbox/README.md: real execution (detonation) was deliberately never
+  # built, for the same hypervisor-risk reasons that ruled it out originally.
+  #
+  # network_mode: host for the same two reasons honeypot/suricata already use it:
+  # this needs the same DMZ-restricted internet egress path AND localhost access
+  # to the dashboard's :8080 API. It never touches docker.sock and never executes
+  # fetched content — it only downloads and statically analyzes.
+  fetcher:
+    build:
+      context: ./sandbox
+      dockerfile: Dockerfile.fetcher
+    network_mode: host
+    environment:
+      - OUTBOX_TOKEN=${OUTBOX_TOKEN:-}
+      - SANDBOX_DASHBOARD_URL=http://127.0.0.1:8080
+    volumes:
+      - honeypot-data:/app/data
     restart: unless-stopped
 
   suricata:

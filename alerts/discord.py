@@ -15,7 +15,7 @@ from config import (
 )
 
 _ALLOWED_ALERT_TYPES = frozenset(
-    {"connect", "credential", "exec_attempt", "download_attempt"}
+    {"connect", "credential", "exec_attempt", "download_attempt", "replication_attempt", "module_attempt", "relay_attempt"}
 )
 # ip:alert_type -> unix time of last webhook
 _cooldown_last_sent = {}

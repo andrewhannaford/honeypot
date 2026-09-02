@@ -26,10 +26,41 @@ alert tcp any any -> any 6379 (msg:"HONEYPOT Redis EVAL Code Execution"; content
 alert tcp any any -> any 6379 (msg:"HONEYPOT Redis Cron Payload"; content:"* * * *"; classtype:attempted-admin; sid:1000023; rev:1;)
 
 # --- Reverse Shell Payloads ---
-alert tcp any any -> any any (msg:"HONEYPOT Reverse Shell /dev/tcp"; content:"/dev/tcp/"; classtype:shellcode-detect; sid:1000030; rev:1;)
-alert tcp any any -> any any (msg:"HONEYPOT Reverse Shell bash -i"; content:"bash -i"; nocase; classtype:shellcode-detect; sid:1000031; rev:1;)
-alert tcp any any -> any any (msg:"HONEYPOT Netcat Reverse Shell"; content:"nc -e"; nocase; classtype:shellcode-detect; sid:1000032; rev:1;)
+alert tcp any any -> any any (msg:"HONEYPOT Reverse Shell /dev/tcp"; flow:to_server; content:"/dev/tcp/"; classtype:shellcode-detect; sid:1000030; rev:2;)
+alert tcp any any -> any any (msg:"HONEYPOT Reverse Shell bash -i"; flow:to_server; content:"bash -i"; nocase; classtype:shellcode-detect; sid:1000031; rev:2;)
+alert tcp any any -> any any (msg:"HONEYPOT Netcat Reverse Shell"; flow:to_server; content:"nc -e"; nocase; classtype:shellcode-detect; sid:1000032; rev:2;)
 
 # --- Download Attempts ---
-alert tcp any any -> any any (msg:"HONEYPOT wget Download Attempt"; content:"wget "; content:"http"; within:100; classtype:policy-violation; sid:1000040; rev:1;)
-alert tcp any any -> any any (msg:"HONEYPOT curl Download Attempt"; content:"curl "; content:"http"; within:100; classtype:policy-violation; sid:1000041; rev:1;)
+alert tcp any any -> any any (msg:"HONEYPOT wget Download Attempt"; flow:to_server; content:"wget "; content:"http"; within:100; classtype:policy-violation; sid:1000040; rev:2;)
+alert tcp any any -> any any (msg:"HONEYPOT curl Download Attempt"; flow:to_server; content:"curl "; content:"http"; within:100; classtype:policy-violation; sid:1000041; rev:2;)
+
+# --- Post-Exploitation Discovery ---
+alert tcp any any -> any any (msg:"HONEYPOT Recon - System Info Command (uname)"; flow:to_server; content:"uname -a"; nocase; classtype:attempted-recon; metadata:mitre_tactic Discovery, mitre_technique T1082; sid:1000050; rev:1;)
+alert tcp any any -> any any (msg:"HONEYPOT Recon - Passwd File Read"; flow:to_server; content:"/etc/passwd"; classtype:attempted-recon; metadata:mitre_tactic Discovery, mitre_technique T1087.001; sid:1000051; rev:1;)
+alert tcp any any -> any any (msg:"HONEYPOT Recon - Process List Command"; flow:to_server; pcre:"/ps\s+(aux|-ef)/"; classtype:attempted-recon; metadata:mitre_tactic Discovery, mitre_technique T1057; sid:1000052; rev:1;)
+alert tcp any any -> any any (msg:"HONEYPOT Recon - Network Config Command"; flow:to_server; pcre:"/(ifconfig|ip\s+a\b)/i"; classtype:attempted-recon; metadata:mitre_tactic Discovery, mitre_technique T1016; sid:1000053; rev:1;)
+
+# --- Persistence ---
+alert tcp any any -> any any (msg:"HONEYPOT Persistence - SSH Authorized Keys Write"; flow:to_server; content:"authorized_keys"; nocase; classtype:attempted-admin; metadata:mitre_tactic Persistence, mitre_technique T1098.004; sid:1000060; rev:1;)
+alert tcp any any -> any any (msg:"HONEYPOT Persistence - Crontab Modification"; flow:to_server; content:"crontab -"; classtype:attempted-admin; metadata:mitre_tactic Persistence, mitre_technique T1053.003; sid:1000061; rev:1;)
+alert tcp any any -> any any (msg:"HONEYPOT Persistence - Account Creation"; flow:to_server; pcre:"/\b(useradd|adduser)\s+\S/"; classtype:attempted-admin; metadata:mitre_tactic Persistence, mitre_technique T1136.001; sid:1000062; rev:1;)
+
+# --- Privilege Escalation / Defense Evasion ---
+alert tcp any any -> any any (msg:"HONEYPOT Privilege Escalation - SUID Bit Set"; flow:to_server; pcre:"/chmod\s+(\+s|4[0-7]{3})/"; classtype:attempted-admin; metadata:mitre_tactic PrivilegeEscalation, mitre_technique T1548.001; sid:1000070; rev:1;)
+alert tcp any any -> any any (msg:"HONEYPOT Defense Evasion - Command History Cleared"; flow:to_server; pcre:"/(history\s+-c|rm\s+\S*bash_history|unset\s+HISTFILE)/i"; classtype:attempted-admin; metadata:mitre_tactic DefenseEvasion, mitre_technique T1070.003; sid:1000071; rev:1;)
+alert tcp any any -> any any (msg:"HONEYPOT Defense Evasion - Log File Deletion"; flow:to_server; pcre:"/rm\s+-[a-z]*f[a-z]*\s+\S*(var\/log|\.log)/i"; classtype:attempted-admin; metadata:mitre_tactic DefenseEvasion, mitre_technique T1070.002; sid:1000072; rev:1;)
+
+# --- Impact (Cryptomining) ---
+alert tcp any any -> any any (msg:"HONEYPOT Impact - Cryptominer Binary Reference"; flow:to_server; content:"xmrig"; nocase; classtype:trojan-activity; metadata:mitre_tactic Impact, mitre_technique T1496; sid:1000080; rev:1;)
+alert tcp any any -> any any (msg:"HONEYPOT Impact - Mining Pool Connection String"; flow:to_server; content:"stratum+tcp"; nocase; classtype:trojan-activity; metadata:mitre_tactic Impact, mitre_technique T1496; sid:1000081; rev:1;)
+
+# --- Command and Control (refined beyond plain wget/curl) ---
+alert tcp any any -> any any (msg:"HONEYPOT C2 - Download Piped Directly to Shell"; flow:to_server; pcre:"/(curl|wget)[^|]*\|\s*(ba)?sh\b/i"; classtype:shellcode-detect; metadata:mitre_tactic CommandAndControl, mitre_technique T1105; sid:1000090; rev:1;)
+alert tcp any any -> any any (msg:"HONEYPOT Defense Evasion - Base64 Decode-and-Execute"; flow:to_server; content:"base64 -d"; nocase; classtype:shellcode-detect; metadata:mitre_tactic DefenseEvasion, mitre_technique T1027; sid:1000091; rev:1;)
+
+# --- Web Initial Access (expanded beyond WordPress/.env) ---
+alert http any any -> any any (msg:"HONEYPOT Log4Shell JNDI Probe"; flow:to_server; http.uri; content:"${jndi:"; classtype:web-application-attack; metadata:mitre_tactic InitialAccess, mitre_technique T1190; sid:1000100; rev:1;)
+alert http any any -> any any (msg:"HONEYPOT Path Traversal Probe"; flow:to_server; http.uri; content:"../"; classtype:web-application-attack; metadata:mitre_tactic InitialAccess, mitre_technique T1190; sid:1000101; rev:1;)
+alert http any any -> any any (msg:"HONEYPOT Common Webshell Filename Probe"; flow:to_server; http.uri; pcre:"/(c99|r57|wso|b374k)\.php/i"; classtype:web-application-attack; metadata:mitre_tactic Persistence, mitre_technique T1505.003; sid:1000102; rev:1;)
+alert http any any -> any any (msg:"HONEYPOT Git Config Disclosure Probe"; flow:to_server; http.uri; content:"/.git/config"; classtype:web-application-attack; metadata:mitre_tactic Reconnaissance, mitre_technique T1595.002; sid:1000103; rev:1;)
+alert http any any -> any any (msg:"HONEYPOT SQL Injection Probe"; flow:to_server; http.uri; content:"UNION SELECT"; nocase; classtype:web-application-attack; metadata:mitre_tactic InitialAccess, mitre_technique T1190; sid:1000110; rev:1;)

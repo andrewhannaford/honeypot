@@ -3,7 +3,6 @@ import hashlib
 import sqlite3
 import datetime
 from config import DB_PATH, DATA_DIR
-from vt_intel import enrich_payload
 
 PAYLOAD_DIR = os.path.join(DATA_DIR, "payloads")
 os.makedirs(PAYLOAD_DIR, exist_ok=True)
@@ -49,10 +48,6 @@ def save_payload(ip, service, data, filename=None, event_id=None):
         """, (timestamp, event_id, ip, service, filename, local_path, len(data), md5_hash, sha256_hash, mime_type))
         conn.commit()
         payload_id = cur.lastrowid
-        
-        # Trigger VT lookup
-        enrich_payload(payload_id, sha256_hash)
-        
         return payload_id
     finally:
         conn.close()

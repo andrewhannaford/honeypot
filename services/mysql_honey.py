@@ -3,6 +3,7 @@ import struct
 import threading
 import time
 import os
+import uuid
 import ratelimit
 from logger import log_event
 from alerts.discord import send_alert
@@ -13,6 +14,12 @@ from config import MYSQL_PORT, MYSQL_VERSION
 def _pkt(payload, seq):
     return struct.pack("<I", len(payload))[:3] + bytes([seq]) + payload
 
+# The protocol's own ceiling is 16MB, but this handler only ever reads a
+# HandshakeResponse41 or a password — both tiny. Matches postgres_honey.py's
+# analogous cap rather than trusting the full protocol maximum.
+_MAX_PKT_LEN = 65536
+
+
 def _read_pkt(sock):
     header = b""
     while len(header) < 4:
@@ -20,6 +27,8 @@ def _read_pkt(sock):
         if not chunk: return None, None
         header += chunk
     length = header[0] | (header[1] << 8) | (header[2] << 16)
+    if length > _MAX_PKT_LEN:
+        return None, None
     seq = header[3]
     body = b""
     while len(body) < length:
@@ -73,8 +82,9 @@ def _error(msg, seq):
 
 def _handle_client(client_sock, client_addr):
     client_ip = client_addr[0]
+    connection_id = uuid.uuid4().hex
     try:
-        log_event(client_ip, MYSQL_PORT, "MYSQL", "connect")
+        log_event(client_ip, MYSQL_PORT, "MYSQL", "connect", connection_id=connection_id)
         send_alert("MYSQL", client_ip, "New connection", alert_type="connect")
 
         client_sock.settimeout(30)
@@ -99,13 +109,14 @@ def _handle_client(client_sock, client_addr):
 
         if password:
             log_event(client_ip, MYSQL_PORT, "MYSQL", "credential",
-                      {"username": username, "password": password})
+                      {"username": username, "password": password}, connection_id=connection_id)
             send_alert("MYSQL", client_ip,
                        f"Login attempt: `{username}` / `{password}`", alert_type="credential")
         else:
             # Client refused the switch — keep the username and the scramble anyway.
             log_event(client_ip, MYSQL_PORT, "MYSQL", "credential",
-                      {"username": username, "password": "", "scramble": scramble})
+                      {"username": username, "password": "", "scramble": scramble},
+                      connection_id=connection_id)
             send_alert("MYSQL", client_ip,
                        f"Login attempt: `{username}` (no cleartext)", alert_type="credential")
 

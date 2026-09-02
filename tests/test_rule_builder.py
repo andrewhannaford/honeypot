@@ -158,6 +158,12 @@ class TestRuleLifecycle(unittest.TestCase):
         self._rules_file = os.path.join(self._tmp, "custom.rules")
 
         conn = sqlite3.connect(self._db)
+        # Matches logger.py's real init_db() schema, MITRE columns included —
+        # this fixture used to omit them (they were added to production via
+        # _add_column_if_missing after this test was written), so every test
+        # in this class failed with sqlite3.OperationalError against
+        # rule_builder.create_rule()'s real INSERT, leaving rule_builder.py's
+        # actual create/toggle/delete behavior with zero passing coverage.
         conn.execute("""
             CREATE TABLE custom_suricata_rules (
                 id INTEGER PRIMARY KEY AUTOINCREMENT, sid INTEGER NOT NULL UNIQUE,
@@ -165,7 +171,9 @@ class TestRuleLifecycle(unittest.TestCase):
                 contents TEXT NOT NULL, http_field TEXT, classtype TEXT NOT NULL,
                 threshold_count INTEGER, threshold_seconds INTEGER,
                 rule_text TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 1,
-                created_at TEXT NOT NULL
+                created_at TEXT NOT NULL,
+                mitre_tactic TEXT, mitre_technique TEXT,
+                mitre_technique_name TEXT, mitre_url TEXT
             )
         """)
         conn.commit()
@@ -268,6 +276,9 @@ class TestRuleLifecycle(unittest.TestCase):
         self.assertEqual(rules[1]["message"], "First")
 
 
+@unittest.skipUnless(hasattr(socket, "AF_UNIX"),
+                      "requires AF_UNIX — Suricata's control socket is Unix-only; "
+                      "production runs in Linux containers, this just can't run on Windows")
 class TestReloadSuricata(unittest.TestCase):
     """Exercises reload_suricata() against a mock unix socket server speaking the same
     version-handshake + JSON-command protocol as Suricata's real unix-command socket,

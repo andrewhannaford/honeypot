@@ -40,20 +40,27 @@ class TestDashboard(unittest.TestCase):
         # We just check structure here.
 
     def test_api_events_filtering(self):
+        # There is no bare GET /api/events route — it predates the
+        # query_lang.py rewrite that replaced it with /api/search (this test
+        # was still targeting the old route and failing with a 404 until
+        # fixed). See test_api_search_with_query_language below for the
+        # replacement query syntax already in use elsewhere in this file.
         log_event("1.1.1.1", 22, "SSH", "connect")
         log_event("2.2.2.2", 80, "HTTP", "request")
-        
+
         # Filter by service
-        res = self.client.get("/api/events?service=SSH")
+        res = self.client.get("/api/search?q=" + "service:SSH")
+        self.assertEqual(res.status_code, 200)
         data = res.get_json()
-        self.assertEqual(len(data), 1)
-        self.assertEqual(data[0]["service"], "SSH")
+        self.assertEqual(data["total"], 1)
+        self.assertEqual(data["results"][0]["service"], "SSH")
 
         # Filter by IP search
-        res = self.client.get("/api/events?search=2.2")
+        res = self.client.get("/api/search?q=" + "ip:2.2.2.2")
+        self.assertEqual(res.status_code, 200)
         data = res.get_json()
-        self.assertEqual(len(data), 1)
-        self.assertEqual(data[0]["ip"], "2.2.2.2")
+        self.assertEqual(data["total"], 1)
+        self.assertEqual(data["results"][0]["ip"], "2.2.2.2")
 
     def test_api_search_with_query_language(self):
         log_event("1.1.1.1", 22, "SSH", "credential", {"username": "root", "password": "x"})
@@ -166,9 +173,9 @@ class TestDashboard(unittest.TestCase):
         )
         conn.execute(
             "INSERT INTO payloads (timestamp, event_id, ip, service, filename, local_path, "
-            "file_size, md5, sha256, mime_type, vt_score) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            "file_size, md5, sha256, mime_type) VALUES (?,?,?,?,?,?,?,?,?,?)",
             (datetime.now(timezone.utc).isoformat(), None, "5.5.5.5", "HTTP", "x.bin",
-             "/tmp/x.bin", 10, "m", "s", "text/plain", None),
+             "/tmp/x.bin", 10, "m", "s", "text/plain"),
         )
         conn.commit()
         conn.close()
