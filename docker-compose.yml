@@ -61,7 +61,8 @@ services:
     restart: unless-stopped
 
   suricata:
-    image: jasonish/suricata:latest
+    # Pinned to the image running in production (2026-11-02). Bump deliberately: update the tag AND digest together.
+    image: jasonish/suricata:8.0.6@sha256:2e11d2f26d305b44b2c4d9c9e4e01abf902a15b63c57d0a24a96bb642f1814e1
     network_mode: host
     cap_add: [NET_ADMIN, NET_RAW, SYS_NICE]
     # Set SURICATA_IFACE in .env to match your network interface (run
